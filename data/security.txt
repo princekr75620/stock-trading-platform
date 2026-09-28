@@ -1,0 +1,1 @@
+8|true|true|90|5|30|false|true|true|50000.00|true|250000.00

@@ -1,0 +1,6 @@
+{
+  "name": "Online Stock Trading Platform",
+  "description": "A complete Java Web-based Indian Stock Trading Platform with Java Servlets, JDBC, MySQL, and Indian equities (NSE/BSE/NIFTY 50) trading logic.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

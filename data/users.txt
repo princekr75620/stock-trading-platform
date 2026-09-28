@@ -1,0 +1,3 @@
+ADMIN|admin|Platform Administrator|admin@apex.com|admin123|Risk & Operations|2026-09-16 04:13:42
+TRADER|trader1|Alex Morgan|alex@apex.com|trader123|46444.80|TCS,RELIANCE|2.00|true|2026-09-16 04:13:42
+TRADER|trader2|Sarah Jenkins|sarah@apex.com|trader123|75000.00|INFY,TATAMOTORS|2.00|true|2026-09-16 04:13:42

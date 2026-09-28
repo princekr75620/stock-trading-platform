@@ -21,12 +21,23 @@ async function handleResponse<T>(res: Response): Promise<T> {
   return data;
 }
 
+/**
+ * Centralized API Client Service for the Stock Trading Platform.
+ * Communicates with the backend REST endpoints for trading, portfolio,
+ * authentication, market updates, and administration.
+ */
 export const api = {
+  /**
+   * Checks the health and operational status of the backend trading engine.
+   */
   async checkHealth(): Promise<{ status: string; backend: string; timestamp: string }> {
     const res = await fetch(`${API_BASE}/health`);
     return handleResponse(res);
   },
 
+  /**
+   * Authenticates a user by username/email and password.
+   */
   async login(usernameOrEmail: string, password: string): Promise<{ success: boolean; user: User }> {
     const res = await fetch(`${API_BASE}/auth/login`, {
       method: 'POST',
@@ -36,16 +47,26 @@ export const api = {
     return handleResponse(res);
   },
 
+  /**
+   * Logs out the current user and clears server session if any.
+   */
   async logout(): Promise<{ success: boolean }> {
     const res = await fetch(`${API_BASE}/auth/logout`, { method: 'POST' });
     return handleResponse(res);
   },
 
+  /**
+   * Retrieves the live list of all Indian equities (NSE & BSE) listed on the exchange.
+   */
   async getStocks(): Promise<Stock[]> {
     const res = await fetch(`${API_BASE}/stocks`);
     return handleResponse(res);
   },
 
+  /**
+   * Executes a BUY order for a given stock symbol and quantity.
+   * Validates sufficient cash balance and stock float before recording transaction.
+   */
   async executeBuy(traderId: string, symbol: string, quantity: number): Promise<{ success: boolean; trade: Trade; portfolio: Portfolio; message: string }> {
     const res = await fetch(`${API_BASE}/trades/buy`, {
       method: 'POST',
@@ -55,6 +76,10 @@ export const api = {
     return handleResponse(res);
   },
 
+  /**
+   * Executes a SELL order for a given stock symbol and quantity.
+   * Validates that the trader owns sufficient shares in their portfolio.
+   */
   async executeSell(traderId: string, symbol: string, quantity: number): Promise<{ success: boolean; trade: Trade; portfolio: Portfolio; message: string }> {
     const res = await fetch(`${API_BASE}/trades/sell`, {
       method: 'POST',
@@ -64,32 +89,50 @@ export const api = {
     return handleResponse(res);
   },
 
+  /**
+   * Fetches the trade execution history. If traderId is passed, filters for that trader.
+   */
   async getTrades(traderId?: string): Promise<Trade[]> {
     const url = traderId ? `${API_BASE}/trades?traderId=${encodeURIComponent(traderId)}` : `${API_BASE}/trades`;
     const res = await fetch(url);
     return handleResponse(res);
   },
 
+  /**
+   * Retrieves the real-time valuation, cost basis, profit/loss, and holdings for a trader.
+   */
   async getPortfolio(traderId: string): Promise<Portfolio> {
     const res = await fetch(`${API_BASE}/portfolio?traderId=${encodeURIComponent(traderId)}`);
     return handleResponse(res);
   },
 
+  /**
+   * Fetches recent news headlines, market updates, and volatility events.
+   */
   async getMarketUpdates(): Promise<MarketUpdate[]> {
     const res = await fetch(`${API_BASE}/market/updates`);
     return handleResponse(res);
   },
 
+  /**
+   * Manually triggers a simulated market price fluctuation across equities.
+   */
   async triggerMarketTick(): Promise<{ success: boolean; message: string }> {
     const res = await fetch(`${API_BASE}/market/tick`, { method: 'POST' });
     return handleResponse(res);
   },
 
+  /**
+   * Retrieves trade execution, price volatility, and security notifications for a user.
+   */
   async getNotifications(userId: string): Promise<NotificationItem[]> {
     const res = await fetch(`${API_BASE}/notifications?userId=${encodeURIComponent(userId)}`);
     return handleResponse(res);
   },
 
+  /**
+   * Marks all alerts/notifications for a given user as read.
+   */
   async markNotificationsRead(userId: string): Promise<{ success: boolean }> {
     const res = await fetch(`${API_BASE}/notifications/read`, {
       method: 'POST',

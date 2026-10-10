@@ -1,12 +1,6 @@
 # Online Stock Trading Platform (NSE & BSE Equities)
 
-[![Java SE 17](https://img.shields.io/badge/Java-17%20LTS-orange.svg)](https://www.oracle.com/java/)
-[![Node.js](https://img.shields.io/badge/Node.js-18%2B%20%2F%2020%2B-green.svg)](https://nodejs.org/)
-[![React 19](https://img.shields.io/badge/React-19-blue.svg)](https://react.dev/)
-[![TypeScript](https://img.shields.io/badge/TypeScript-5.8-blue.svg)](https://www.typescriptlang.org/)
-[![Vite](https://img.shields.io/badge/Vite-6-purple.svg)](https://vitejs.dev/)
-[![Tailwind CSS](https://img.shields.io/badge/TailwindCSS-4-cyan.svg)](https://tailwindcss.com/)
-[![MySQL Ready](https://img.shields.io/badge/Database-MySQL%20%2F%20File%20Persistence-blue.svg)](https://www.mysql.com/)
+
 
 A comprehensive, full-stack **Indian Stock Trading Platform** designed with enterprise **Java EE architecture (Servlets, JDBC, DAO Pattern, OOP principles)** and a modern **React TypeScript Single Page Application (SPA)**. Built specifically to fulfill academic evaluation standards (including the 33-mark GUVI Java Web & Database curriculum) and real-world trading workflows.
 

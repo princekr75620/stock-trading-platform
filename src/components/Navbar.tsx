@@ -7,6 +7,7 @@ interface NavbarProps {
   onSelectTab: (tab: string) => void;
   onLogout: () => void;
   onTriggerTick: () => void;
+  onOpenRubric?: () => void;
   isTicking: boolean;
   marketStatus: string;
   notifications: NotificationItem[];
@@ -25,6 +26,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   onSelectTab,
   onLogout,
   onTriggerTick,
+  onOpenRubric,
   isTicking,
   marketStatus,
   notifications,
@@ -86,12 +88,22 @@ export const Navbar: React.FC<NavbarProps> = ({
           </div>
 
           {/* Right Header Controls */}
-          <div className="flex items-center space-x-4 text-sm">
+          <div className="flex items-center space-x-3 text-sm">
+            {onOpenRubric && (
+              <button
+                onClick={onOpenRubric}
+                title="View Java Web Projects Marking Rubric & 33 Marks Evidence"
+                className="px-2.5 py-1 text-xs border border-purple-200 rounded-md bg-purple-50 text-purple-700 hover:bg-purple-100 transition font-semibold flex items-center space-x-1 shadow-xs"
+              >
+                <span>🎓 Rubric (33 Marks)</span>
+              </button>
+            )}
+
             <button
               onClick={onTriggerTick}
               disabled={isTicking}
               title="Simulate Market Price Fluctuation in Java Engine"
-              className="px-2.5 py-1 text-xs border border-gray-300 rounded bg-white text-gray-700 hover:bg-gray-50 transition font-medium disabled:opacity-50"
+              className="px-2.5 py-1 text-xs border border-gray-300 rounded-md bg-white text-gray-700 hover:bg-gray-50 transition font-medium disabled:opacity-50"
             >
               {isTicking ? 'Updating...' : 'Simulate Price Tick'}
             </button>

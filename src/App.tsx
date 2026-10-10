@@ -165,6 +165,7 @@ export default function App() {
         onSelectTab={setActiveTab}
         onLogout={handleLogout}
         onTriggerTick={handleTriggerTick}
+        onOpenRubric={() => setShowJavaInspector(true)}
         isTicking={isTicking}
         marketStatus={marketStatus}
         notifications={notifications}

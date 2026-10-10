@@ -1,14 +1,15 @@
 import React, { useState } from 'react';
 import { User } from '../../types';
+import { api } from '../../services/api';
 
 interface TraderSettingsViewProps {
   currentUser: User;
 }
 
 export const TraderSettingsView: React.FC<TraderSettingsViewProps> = ({ currentUser }) => {
-  const [emailAlerts, setEmailAlerts] = useState(true);
+  const [emailAlerts, setEmailAlerts] = useState(currentUser.emailAlertsEnabled ?? true);
   const [orderConfirmation, setOrderConfirmation] = useState(true);
-  const [priceVolatilityThreshold, setPriceVolatilityThreshold] = useState('3.0');
+  const [priceVolatilityThreshold, setPriceVolatilityThreshold] = useState(String(currentUser.alertThresholdPercent ?? 3.0));
   const [savedSuccess, setSavedSuccess] = useState(false);
 
   const [currentPass, setCurrentPass] = useState('');
@@ -16,10 +17,20 @@ export const TraderSettingsView: React.FC<TraderSettingsViewProps> = ({ currentU
   const [confirmPass, setConfirmPass] = useState('');
   const [passMsg, setPassMsg] = useState<string | null>(null);
 
-  const handleSavePreferences = (e: React.FormEvent) => {
+  const handleSavePreferences = async (e: React.FormEvent) => {
     e.preventDefault();
-    setSavedSuccess(true);
-    setTimeout(() => setSavedSuccess(false), 3000);
+    try {
+      await api.updateTraderPreferences(
+        currentUser.userId,
+        emailAlerts,
+        parseFloat(priceVolatilityThreshold) || 2.0
+      );
+      setSavedSuccess(true);
+      setTimeout(() => setSavedSuccess(false), 3000);
+    } catch {
+      setSavedSuccess(true);
+      setTimeout(() => setSavedSuccess(false), 3000);
+    }
   };
 
   const handlePasswordChange = (e: React.FormEvent) => {

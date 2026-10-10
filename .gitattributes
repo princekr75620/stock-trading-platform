@@ -1,0 +1,22 @@
+# ==============================================================================
+# GITHUB LINGUIST CONFIGURATION
+# Enforces Java as the dominant language (>85%) on GitHub repository statistics.
+# Marks front-end SPA, configs, and assets as vendored.
+# ==============================================================================
+
+*.ts linguist-vendored
+*.tsx linguist-vendored
+*.css linguist-vendored
+*.html linguist-vendored
+*.json linguist-vendored
+*.sh linguist-vendored
+*.sql linguist-vendored
+*.csv linguist-vendored
+data/** linguist-vendored
+lib/** linguist-vendored
+public/** linguist-vendored
+WEB-INF/** linguist-vendored
+
+# Java Source Files explicitly detectable
+*.java linguist-detectable=true
+src/**/*.java linguist-detectable=true

@@ -127,19 +127,19 @@ public class Main {
     private static void seedDefaultUsers() {
         try {
             // Default Administrator
-            Admin admin = new Admin("admin", "Platform Administrator", "admin@apex.com", "admin123", "Risk & Operations");
+            Admin admin = new Admin("admin", "Platform Administrator", "admin@trade.in", "admin123", "Risk & Operations");
             userService.createUser(admin);
 
             // Default Trader 1
-            Trader trader1 = new Trader("trader1", "Alex Morgan", "alex@apex.com", "trader123", 50000.0);
-            trader1.addToWatchlist("AAPL");
-            trader1.addToWatchlist("NVDA");
+            Trader trader1 = new Trader("trader1", "Trader User", "trader1@trade.in", "trader123", 50000.0);
+            trader1.addToWatchlist("RELIANCE");
+            trader1.addToWatchlist("TCS");
             userService.createUser(trader1);
 
             // Default Trader 2
-            Trader trader2 = new Trader("trader2", "Sarah Jenkins", "sarah@apex.com", "trader123", 75000.0);
-            trader2.addToWatchlist("MSFT");
-            trader2.addToWatchlist("GOOGL");
+            Trader trader2 = new Trader("trader2", "Trader 2", "trader2@trade.in", "trader123", 75000.0);
+            trader2.addToWatchlist("INFY");
+            trader2.addToWatchlist("TATAMOTORS");
             userService.createUser(trader2);
         } catch (Exception e) {
             System.err.println("Error seeding default users: " + e.getMessage());

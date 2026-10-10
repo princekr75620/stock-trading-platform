@@ -31,13 +31,16 @@ export const TraderDashboard: React.FC<TraderDashboardProps> = ({
   return (
     <div className="space-y-6">
       {/* Top Welcome */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-4 border-b border-gray-200">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-slate-200">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">
-            Welcome, Trader
+          <h1 className="text-2xl font-black text-slate-900 tracking-tight flex items-center space-x-2">
+            <span>Welcome, {currentUser.name || 'Trader'}</span>
+            <span className="text-xs px-2.5 py-0.5 rounded-full bg-orange-100 text-orange-800 font-bold border border-orange-200">
+              NSE / BSE Terminal
+            </span>
           </h1>
-          <p className="text-sm text-gray-600">
-            Overview of your current stock holdings, recent trade activity, and market movement.
+          <p className="text-sm text-slate-500 mt-1">
+            Real-time equity valuations, portfolio P&amp;L performance, and order execution desk.
           </p>
         </div>
         <div className="flex items-center space-x-2">
@@ -49,12 +52,32 @@ export const TraderDashboard: React.FC<TraderDashboardProps> = ({
           </button>
           <button
             onClick={() => onNavigate('portfolio')}
-            className="px-4 py-2 border border-gray-300 hover:bg-gray-50 text-gray-700 text-sm font-medium rounded-md transition"
+            className="px-4 py-2 border border-slate-300 hover:bg-slate-50 text-slate-700 text-sm font-semibold rounded-lg transition"
           >
             View Portfolio
           </button>
         </div>
       </div>
+
+      {/* New Trader Welcome / Prompt Banner */}
+      {holdingsCount === 0 && (
+        <div className="bg-gradient-to-r from-orange-50 via-amber-50 to-emerald-50 border border-orange-200 rounded-xl p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xs">
+          <div>
+            <h3 className="font-bold text-slate-900 text-sm flex items-center space-x-1.5">
+              <span>🇮🇳 Welcome to Bharat Stocks! Ready to make your first trade?</span>
+            </h3>
+            <p className="text-xs text-slate-600 mt-0.5">
+              Your ₹{(portfolio?.cashBalance ?? currentUser.cashBalance ?? 50000).toLocaleString('en-IN')} INR paper margin is ready. Pick top equities like Reliance, TCS, INFY or Tata Motors in the live watchlist!
+            </p>
+          </div>
+          <button
+            onClick={() => onNavigate('stocks')}
+            className="px-4 py-2 bg-gradient-to-r from-orange-500 to-amber-600 hover:from-orange-600 hover:to-amber-700 text-white text-xs font-bold rounded-lg transition shadow-xs shrink-0 cursor-pointer"
+          >
+            Explore Watchlist &bull; Buy First Stock ➔
+          </button>
+        </div>
+      )}
 
       {/* Summary Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -206,7 +229,7 @@ export const TraderDashboard: React.FC<TraderDashboardProps> = ({
                         {up.stockSymbol} <span className="font-normal text-gray-500">({up.stockName})</span>
                       </span>
                       <span className={`font-semibold text-xs ${isPositive ? 'text-green-600' : 'text-red-600'}`}>
-                        ${(up.currentPrice ?? 0).toFixed(2)} ({isPositive ? '+' : ''}{(up.percentChange ?? 0).toFixed(2)}%)
+                        ₹{(up.currentPrice ?? 0).toFixed(2)} ({isPositive ? '+' : ''}{(up.percentChange ?? 0).toFixed(2)}%)
                       </span>
                     </div>
                     <p className="text-xs text-gray-700 mt-1">{up.headline}</p>

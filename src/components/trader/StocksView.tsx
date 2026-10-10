@@ -24,13 +24,15 @@ export const StocksView: React.FC<StocksViewProps> = ({ stocks, onOpenTrade }) =
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-gray-200">
         <div>
           <div className="flex items-center space-x-2">
-            <h1 className="text-2xl font-bold text-gray-900">Indian Stock Market</h1>
-            <span className="px-2 py-0.5 text-xs font-semibold rounded bg-amber-50 text-amber-700 border border-amber-200">
-              Demo / Simulated Prices
-            </span>
+            <h1 className="text-2xl font-bold text-gray-900 flex items-center space-x-2">
+              <span>1. Stock Trading</span>
+              <span className="text-xs bg-purple-50 text-purple-700 px-2.5 py-0.5 rounded border border-purple-200 font-mono">
+                Java: StockServlet &bull; TradingService
+              </span>
+            </h1>
           </div>
           <p className="text-sm text-gray-600 mt-1">
-            Listed equities across NSE (National Stock Exchange) and BSE (Bombay Stock Exchange) in Indian Rupees (₹).
+            Interface for executing buy and sell trades with current market data across NSE &amp; BSE.
           </p>
         </div>
 

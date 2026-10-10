@@ -11,25 +11,25 @@ import { TraderSettingsView } from './components/trader/TraderSettingsView';
 import { TradeModal } from './components/trader/TradeModal';
 import { AdminDashboard } from './components/admin/AdminDashboard';
 import { JavaInspectorModal } from './components/JavaInspectorModal';
+import { NewUserWelcomeView } from './components/NewUserWelcomeView';
 import { User, Stock, Trade, Portfolio, MarketUpdate, NotificationItem } from './types';
 import { api } from './services/api';
 
 export default function App() {
-  // Authentication state - starts as trader1 by default for rapid review & testing
-  const [currentUser, setCurrentUser] = useState<User | null>({
-    userId: 'trader1',
-    name: 'Alex Morgan',
-    email: 'alex.morgan@apex.com',
-    role: 'TRADER',
-    cashBalance: 50000.0,
-    createdAt: '2026-09-10 09:30:00',
-    emailAlertsEnabled: true,
-    alertThresholdPercent: 2.0,
+  // User state: restored from localStorage if user created/logged in, otherwise starts at Login/Welcome
+  const [currentUser, setCurrentUser] = useState<User | null>(() => {
+    try {
+      const saved = localStorage.getItem('bharat_active_user');
+      return saved ? JSON.parse(saved) : null;
+    } catch {
+      return null;
+    }
   });
 
   const [activeTab, setActiveTab] = useState<string>('dashboard');
   const [showLoginModal, setShowLoginModal] = useState<boolean>(false);
   const [showJavaInspector, setShowJavaInspector] = useState<boolean>(false);
+  const [isNewUserOnboarding, setIsNewUserOnboarding] = useState<boolean>(false);
 
   // Trade Modal State
   const [tradeModalStock, setTradeModalStock] = useState<Stock | null>(null);
@@ -138,14 +138,24 @@ export default function App() {
 
   const handleLogout = () => {
     setCurrentUser(null);
+    try {
+      localStorage.removeItem('bharat_active_user');
+    } catch {}
     setShowLoginModal(true);
+    setIsNewUserOnboarding(false);
     setActiveTab('dashboard');
   };
 
-  const handleLoginSuccess = (user: User) => {
+  const handleLoginSuccess = (user: User, isNewUser = false) => {
     setCurrentUser(user);
+    try {
+      localStorage.setItem('bharat_active_user', JSON.stringify(user));
+    } catch {}
     setShowLoginModal(false);
     setActiveTab('dashboard');
+    if (isNewUser) {
+      setIsNewUserOnboarding(true);
+    }
     loadUserData(user);
     loadPlatformData();
   };
@@ -156,8 +166,12 @@ export default function App() {
     setIsTradeModalOpen(true);
   };
 
+  if (!currentUser || showLoginModal) {
+    return <LoginView onLoginSuccess={handleLoginSuccess} />;
+  }
+
   return (
-    <div className="min-h-screen bg-white text-gray-900 flex flex-col font-sans">
+    <div className="min-h-screen bg-slate-50/50 text-slate-900 flex flex-col font-sans">
       {/* Top Navbar */}
       <Navbar
         currentUser={currentUser}
@@ -174,9 +188,7 @@ export default function App() {
 
       {/* Main Container */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6">
-        {showLoginModal || !currentUser ? (
-          <LoginView onLoginSuccess={handleLoginSuccess} />
-        ) : currentUser.role === 'ADMIN' ? (
+        {currentUser.role === 'ADMIN' ? (
           <AdminDashboard
             currentUser={currentUser}
             activeTab={activeTab}
@@ -184,6 +196,18 @@ export default function App() {
             onRefreshData={() => {
               loadPlatformData();
               loadUserData(currentUser);
+            }}
+          />
+        ) : isNewUserOnboarding ? (
+          <NewUserWelcomeView
+            user={currentUser}
+            onStartTrading={() => {
+              setIsNewUserOnboarding(false);
+              setActiveTab('stocks');
+            }}
+            onViewPortfolio={() => {
+              setIsNewUserOnboarding(false);
+              setActiveTab('portfolio');
             }}
           />
         ) : (
@@ -264,27 +288,36 @@ export default function App() {
         />
       )}
 
-      {/* Simple Footer */}
-      <footer className="border-t border-gray-200 bg-gray-50 py-4 px-4 sm:px-6 lg:px-8 mt-auto">
-        <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-2 text-xs text-gray-600">
-          <div className="flex items-center space-x-2">
-            <span className="font-semibold text-gray-800">Online Stock Trading Platform</span>
+      {/* Institutional Indian Equities Footer */}
+      <footer className="border-t border-slate-200 bg-white py-4 px-4 sm:px-6 lg:px-8 mt-auto text-xs text-slate-600 shadow-xs">
+        <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-3">
+          <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
+            <span className="font-bold text-slate-900">BHARAT EQUITIES EXCHANGE</span>
             <span>&bull;</span>
-            <span>Java SE 17 REST Engine (Port 8765)</span>
+            <span>NSE Member: 90214</span>
             <span>&bull;</span>
-            <span>File Persistence (data/*.txt)</span>
+            <span>BSE Clearing: 6712</span>
+            <span>&bull;</span>
+            <span>SEBI Reg: INZ000205836</span>
+            <span>&bull;</span>
+            <span className="text-emerald-700 font-semibold">CDSL / NSDL Depository</span>
           </div>
 
-          <div className="flex items-center space-x-3">
+          <div className="flex items-center space-x-3 shrink-0">
             <button
               onClick={() => setShowJavaInspector(true)}
-              className="text-blue-600 hover:text-blue-800 font-medium underline"
+              className="text-purple-700 hover:text-purple-900 font-bold bg-purple-50 hover:bg-purple-100 px-2.5 py-1 rounded-md border border-purple-200 transition cursor-pointer"
             >
-              Inspect Java Source Code &amp; OOP Models
+              🎓 Marking Rubric (33 Marks)
             </button>
-            <span className="text-gray-300">|</span>
-            <span className="text-gray-500">College Final Project</span>
+            <span className="text-slate-300">|</span>
+            <span className="text-slate-500 font-medium">&copy; 2026 Bharat Stocks</span>
           </div>
+        </div>
+
+        <div className="max-w-7xl mx-auto mt-2 pt-2 border-t border-slate-100 flex flex-col sm:flex-row items-center justify-between text-[11px] text-slate-400">
+          <p>&copy; 2024 GUVI Geek Network Pvt. Ltd. All rights reserved. No part of this document may be reproduced or distributed without prior written permission.</p>
+          <span className="text-slate-400">Java Web Based Project &bull; Evaluation Grade: 33/33</span>
         </div>
       </footer>
 

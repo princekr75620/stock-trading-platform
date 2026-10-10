@@ -106,8 +106,8 @@ const users: Map<string, UserRecord> = new Map([
     'trader1',
     {
       userId: 'trader1',
-      name: 'Alex Morgan',
-      email: 'alex@apex.com',
+      name: 'Trader User',
+      email: 'trader1@trade.in',
       password: 'trader123',
       role: 'TRADER',
       cashBalance: 46444.80,
@@ -121,8 +121,8 @@ const users: Map<string, UserRecord> = new Map([
     'trader2',
     {
       userId: 'trader2',
-      name: 'Sarah Jenkins',
-      email: 'sarah@apex.com',
+      name: 'Trader 2',
+      email: 'trader2@trade.in',
       password: 'trader123',
       role: 'TRADER',
       cashBalance: 75000.00,

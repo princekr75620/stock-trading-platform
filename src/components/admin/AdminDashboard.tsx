@@ -514,9 +514,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         <div className="space-y-4">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-gray-200">
             <div>
-              <h1 className="text-2xl font-bold text-gray-900">User Management</h1>
+              <h1 className="text-2xl font-bold text-gray-900 flex items-center space-x-2">
+                <span>1. User Management</span>
+                <span className="text-xs bg-purple-50 text-purple-700 px-2.5 py-0.5 rounded border border-purple-200 font-mono">
+                  Java: UserDAO &bull; UserManagementServlet
+                </span>
+              </h1>
               <p className="text-sm text-gray-600">
-                Create, update, inspect, and remove trader and administrator accounts.
+                Table listing user accounts with options to add, edit, or delete users.
               </p>
             </div>
             <button
@@ -720,9 +725,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       {activeTab === 'security' && (
         <div className="space-y-6">
           <div className="pb-4 border-b border-gray-200">
-            <h1 className="text-2xl font-bold text-gray-900">Financial Data Security</h1>
+            <h1 className="text-2xl font-bold text-gray-900 flex items-center space-x-2">
+              <span>2. Financial Data Security</span>
+              <span className="text-xs bg-purple-50 text-purple-700 px-2.5 py-0.5 rounded border border-purple-200 font-mono">
+                Java: SecurityService &bull; AuthenticationFilter
+              </span>
+            </h1>
             <p className="text-sm text-gray-600">
-              Security status, password enforcement, session controls, and audit incidents.
+              Section displaying current security settings and recent security incidents.
             </p>
           </div>
 
@@ -886,9 +896,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       {(activeTab === 'system-settings' || activeTab === 'settings') && (
         <div className="space-y-6">
           <div className="pb-4 border-b border-gray-200">
-            <h1 className="text-2xl font-bold text-gray-900">System Settings</h1>
+            <h1 className="text-2xl font-bold text-gray-900 flex items-center space-x-2">
+              <span>3. System Settings</span>
+              <span className="text-xs bg-purple-50 text-purple-700 px-2.5 py-0.5 rounded border border-purple-200 font-mono">
+                Java: SystemSettings &bull; DBConnection
+              </span>
+            </h1>
             <p className="text-sm text-gray-600">
-              Engine status, market operational controls, and backend configuration.
+              Interface for adjusting system configuration settings and monitoring system status.
             </p>
           </div>
 
@@ -987,9 +1002,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         <div className="space-y-4">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-gray-200">
             <div>
-              <h1 className="text-2xl font-bold text-gray-900">Trade Activity Monitoring</h1>
+              <h1 className="text-2xl font-bold text-gray-900 flex items-center space-x-2">
+                <span>4. Trade Activity Monitoring</span>
+                <span className="text-xs bg-purple-50 text-purple-700 px-2.5 py-0.5 rounded border border-purple-200 font-mono">
+                  Java: TransactionDAO &bull; TradingService
+                </span>
+              </h1>
               <p className="text-sm text-gray-600">
-                Audit feed of all orders executed across the entire trading ecosystem.
+                Graphical representations of recent trades and system performance metrics.
               </p>
             </div>
             <button
@@ -1051,9 +1071,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       {activeTab === 'reports' && (
         <div className="space-y-6">
           <div className="pb-4 border-b border-gray-200">
-            <h1 className="text-2xl font-bold text-gray-900">Reports Generator</h1>
+            <h1 className="text-2xl font-bold text-gray-900 flex items-center space-x-2">
+              <span>5. Report Generation</span>
+              <span className="text-xs bg-purple-50 text-purple-700 px-2.5 py-0.5 rounded border border-purple-200 font-mono">
+                Java: ReportGenerator &bull; ReportService
+              </span>
+            </h1>
             <p className="text-sm text-gray-600">
-              Generate structured audit summaries directly from Java models and export as text files.
+              Tools for generating financial reports and system analytics.
             </p>
           </div>
 

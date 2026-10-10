@@ -36,7 +36,7 @@ public class TradingServiceTest {
     }
 
     public static void testBuyValidationSuccess() {
-        User trader = new Trader("trader1", "Alex Morgan", "alex@apex.com", "pass", 100000.0);
+        User trader = new Trader("trader1", "Indian Trader", "trader1@trade.in", "pass", 100000.0);
         Stock reliance = new Stock(1, "RELIANCE", "Reliance Industries", "NSE", 2980.50, 50000);
         reliance.setStatus("ACTIVE");
 
@@ -50,7 +50,7 @@ public class TradingServiceTest {
     }
 
     public static void testInsufficientBalanceThrowsException() {
-        User trader = new Trader("trader1", "Alex Morgan", "alex@apex.com", "pass", 1000.0);
+        User trader = new Trader("trader1", "Indian Trader", "trader1@trade.in", "pass", 1000.0);
         Stock reliance = new Stock(1, "RELIANCE", "Reliance Industries", "NSE", 2980.50, 50000);
         reliance.setStatus("ACTIVE");
 
@@ -66,7 +66,7 @@ public class TradingServiceTest {
     }
 
     public static void testInsufficientStockQuantityThrowsException() {
-        User trader = new Trader("trader1", "Alex Morgan", "alex@apex.com", "pass", 10000000.0);
+        User trader = new Trader("trader1", "Indian Trader", "trader1@trade.in", "pass", 10000000.0);
         Stock tcs = new Stock(2, "TCS", "Tata Consultancy Services", "NSE", 4245.00, 5);
         tcs.setStatus("ACTIVE");
 

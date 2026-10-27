@@ -8,6 +8,7 @@ interface NavbarProps {
   onLogout: () => void;
   onTriggerTick: () => void;
   onOpenRubric?: () => void;
+  onOpenDbHealth?: () => void;
   isTicking: boolean;
   marketStatus: string;
   notifications: NotificationItem[];
@@ -27,6 +28,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   onLogout,
   onTriggerTick,
   onOpenRubric,
+  onOpenDbHealth,
   isTicking,
   marketStatus,
   notifications,
@@ -145,6 +147,17 @@ export const Navbar: React.FC<NavbarProps> = ({
                 className="px-2.5 py-1.5 text-xs border border-purple-200 rounded-lg bg-purple-50 hover:bg-purple-100 text-purple-700 transition font-bold flex items-center space-x-1.5 shadow-xs cursor-pointer"
               >
                 <span>🎓 Rubric (33 Marks)</span>
+              </button>
+            )}
+
+            {onOpenDbHealth && (
+              <button
+                onClick={onOpenDbHealth}
+                title="Inspect Relational Database Architecture &amp; Live JDBC Connectivity"
+                className="px-2.5 py-1.5 text-xs border border-emerald-300 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-800 transition font-bold flex items-center space-x-1.5 shadow-xs cursor-pointer"
+              >
+                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                <span>🗄️ DB Status</span>
               </button>
             )}
 

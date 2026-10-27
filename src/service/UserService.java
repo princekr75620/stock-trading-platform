@@ -74,6 +74,11 @@ public class UserService implements IUserService {
             }
         }
 
+        // Hash raw password with BCrypt if not already hashed
+        if (user.getPassword() != null && !util.PasswordHasher.isBCryptHash(user.getPassword())) {
+            user.setPassword(util.PasswordHasher.hashPassword(user.getPassword()));
+        }
+
         userMap.put(uid, user);
         try {
             userDAO.insert(user);
@@ -150,12 +155,27 @@ public class UserService implements IUserService {
             if (password.length() < 4) {
                 throw new InvalidInputException("Password must be at least 4 characters.");
             }
-            user.setPassword(password);
+            if (!util.PasswordHasher.isBCryptHash(password)) {
+                user.setPassword(util.PasswordHasher.hashPassword(password));
+            } else {
+                user.setPassword(password);
+            }
         }
         try {
             userDAO.update(user);
         } catch (Exception e) {
             System.err.println("[UserService] Error updating user in DB: " + e.getMessage());
+        }
+    }
+
+    @Override
+    public synchronized void updateUser(User user) {
+        if (user == null || user.getUserId() == null) return;
+        userMap.put(user.getUserId(), user);
+        try {
+            userDAO.update(user);
+        } catch (Exception e) {
+            System.err.println("[UserService] Note updating user in DB: " + e.getMessage());
         }
     }
 

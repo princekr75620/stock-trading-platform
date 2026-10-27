@@ -19,6 +19,10 @@ public class AdminDashboardServlet extends BaseServlet {
     protected void doGet(HttpServletRequest request, HttpServletResponse response)
             throws ServletException, IOException {
 
+        if (!ensureAdmin(request, response)) {
+            return;
+        }
+
         int totalUsers = userService.getUserCount();
         int totalTraders = userService.getTraderCount();
         int totalAdmins = userService.getAdminCount();

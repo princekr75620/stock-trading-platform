@@ -7,6 +7,7 @@
 CREATE DATABASE IF NOT EXISTS stock_trading;
 USE stock_trading;
 
+DROP TABLE IF EXISTS watchlist;
 DROP TABLE IF EXISTS transactions;
 DROP TABLE IF EXISTS portfolio;
 DROP TABLE IF EXISTS stocks;
@@ -80,6 +81,20 @@ CREATE TABLE transactions (
     INDEX idx_user_tx (user_id, transaction_date)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
+-- ------------------------------------------------------------------------------
+-- 5. WATCHLIST TABLE
+-- Tracks user-specific watched stock symbols with unique user-symbol pairs.
+-- ------------------------------------------------------------------------------
+CREATE TABLE watchlist (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    user_id VARCHAR(50) NOT NULL,
+    symbol VARCHAR(10) NOT NULL,
+    added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_user_symbol (user_id, symbol),
+    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
+    INDEX idx_user_watchlist (user_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 -- ==============================================================================
 -- INITIAL SEED DATA (Authentic Indian Market Equities - NSE / BSE)
 -- ==============================================================================
@@ -122,3 +137,11 @@ INSERT INTO transactions (user_id, stock_id, symbol, transaction_type, quantity,
 ('trader1', 1, 'RELIANCE', 'BUY', 20, 2900.00, 58000.00, DATE_SUB(NOW(), INTERVAL 3 DAY)),
 ('trader1', 2, 'TCS', 'BUY', 10, 4150.00, 41500.00, DATE_SUB(NOW(), INTERVAL 2 DAY)),
 ('trader1', 4, 'INFY', 'BUY', 25, 1850.00, 46250.00, DATE_SUB(NOW(), INTERVAL 1 DAY));
+
+-- Seed Default Trader Watchlists
+INSERT INTO watchlist (user_id, symbol) VALUES
+('trader1', 'RELIANCE'),
+('trader1', 'TCS'),
+('trader1', 'INFY'),
+('trader2', 'TATAMOTORS'),
+('trader2', 'SBIN');

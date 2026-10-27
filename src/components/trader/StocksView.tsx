@@ -1,21 +1,70 @@
-import React, { useState } from 'react';
-import { Stock } from '../../types';
+import React, { useState, useEffect } from 'react';
+import { Stock, User } from '../../types';
+import { api } from '../../services/api';
 
 interface StocksViewProps {
   stocks: Stock[];
+  currentUser?: User | null;
   onOpenTrade: (stock: Stock, type: 'BUY' | 'SELL') => void;
 }
 
-export const StocksView: React.FC<StocksViewProps> = ({ stocks, onOpenTrade }) => {
+export const StocksView: React.FC<StocksViewProps> = ({ stocks, currentUser, onOpenTrade }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [exchangeFilter, setExchangeFilter] = useState<'ALL' | 'NSE' | 'BSE'>('ALL');
+  const [viewFilter, setViewFilter] = useState<'ALL' | 'WATCHLIST'>('ALL');
+  const [watchlistSymbols, setWatchlistSymbols] = useState<Set<string>>(new Set());
+  const [isTogglingSymbol, setIsTogglingSymbol] = useState<string | null>(null);
+
+  // Fetch watchlist for current user on mount
+  useEffect(() => {
+    if (currentUser?.userId) {
+      api.getWatchlist(currentUser.userId)
+        .then((data) => {
+          if (data && Array.isArray(data.watchlist)) {
+            setWatchlistSymbols(new Set(data.watchlist));
+          }
+        })
+        .catch((err) => {
+          console.warn('Watchlist fetch warning:', err);
+        });
+    }
+  }, [currentUser?.userId]);
+
+  const handleToggleWatchlist = async (symbol: string) => {
+    if (!currentUser?.userId || isTogglingSymbol) return;
+    setIsTogglingSymbol(symbol);
+
+    // Optimistic UI update
+    const nextSet = new Set(watchlistSymbols);
+    const wasInWatchlist = nextSet.has(symbol);
+    if (wasInWatchlist) {
+      nextSet.delete(symbol);
+    } else {
+      nextSet.add(symbol);
+    }
+    setWatchlistSymbols(nextSet);
+
+    try {
+      const res = await api.toggleWatchlist(symbol, currentUser.userId, 'toggle');
+      if (res && Array.isArray(res.watchlist)) {
+        setWatchlistSymbols(new Set(res.watchlist));
+      }
+    } catch (err) {
+      console.error('Failed to toggle watchlist:', err);
+      // Revert on error
+      setWatchlistSymbols(watchlistSymbols);
+    } finally {
+      setIsTogglingSymbol(null);
+    }
+  };
 
   const filteredStocks = stocks.filter((s) => {
     const matchesSearch =
       s.symbol.toLowerCase().includes(searchTerm.toLowerCase()) ||
       s.name.toLowerCase().includes(searchTerm.toLowerCase());
     const matchesExchange = exchangeFilter === 'ALL' || (s.exchange || 'NSE') === exchangeFilter;
-    return matchesSearch && matchesExchange;
+    const matchesWatchlist = viewFilter === 'ALL' || watchlistSymbols.has(s.symbol);
+    return matchesSearch && matchesExchange && matchesWatchlist;
   });
 
   return (
@@ -36,7 +85,36 @@ export const StocksView: React.FC<StocksViewProps> = ({ stocks, onOpenTrade }) =
           </p>
         </div>
 
-        <div className="flex items-center space-x-2 w-full sm:w-auto">
+        <div className="flex items-center space-x-2 w-full sm:w-auto flex-wrap gap-y-2">
+          {/* View Filter Tabs: All vs Watchlist */}
+          <div className="inline-flex rounded-lg border border-gray-300 p-0.5 bg-gray-50 text-xs font-semibold">
+            <button
+              onClick={() => setViewFilter('ALL')}
+              className={`px-3 py-1 rounded-md transition cursor-pointer ${
+                viewFilter === 'ALL'
+                  ? 'bg-white text-gray-900 shadow-xs'
+                  : 'text-gray-600 hover:text-gray-900'
+              }`}
+            >
+              All Equities ({stocks.length})
+            </button>
+            <button
+              onClick={() => setViewFilter('WATCHLIST')}
+              className={`px-3 py-1 rounded-md transition flex items-center space-x-1 cursor-pointer ${
+                viewFilter === 'WATCHLIST'
+                  ? 'bg-amber-500 text-white shadow-xs'
+                  : 'text-gray-600 hover:text-gray-900'
+              }`}
+            >
+              <span>⭐ Watchlist</span>
+              <span className={`ml-1 px-1.5 py-0.2 rounded-full text-[10px] ${
+                viewFilter === 'WATCHLIST' ? 'bg-amber-600 text-white' : 'bg-gray-200 text-gray-700'
+              }`}>
+                {watchlistSymbols.size}
+              </span>
+            </button>
+          </div>
+
           <select
             value={exchangeFilter}
             onChange={(e) => setExchangeFilter(e.target.value as any)}
@@ -48,10 +126,10 @@ export const StocksView: React.FC<StocksViewProps> = ({ stocks, onOpenTrade }) =
           </select>
           <input
             type="text"
-            placeholder="Search by symbol (e.g. RELIANCE, TCS)..."
+            placeholder="Search symbol or name..."
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
-            className="w-full sm:w-72 px-3 py-1.5 border border-gray-300 rounded text-sm text-gray-900 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            className="w-full sm:w-60 px-3 py-1.5 border border-gray-300 rounded text-sm text-gray-900 focus:outline-none focus:ring-1 focus:ring-blue-500"
           />
         </div>
       </div>
@@ -62,6 +140,7 @@ export const StocksView: React.FC<StocksViewProps> = ({ stocks, onOpenTrade }) =
           <table className="w-full text-left text-sm">
             <thead className="bg-gray-50 text-xs text-gray-600 uppercase border-b border-gray-200">
               <tr>
+                <th className="py-3 px-3 font-semibold text-center w-12">Watch</th>
                 <th className="py-3 px-3 font-semibold">Exch</th>
                 <th className="py-3 px-4 font-semibold">Ticker Symbol</th>
                 <th className="py-3 px-4 font-semibold">Company Name</th>
@@ -74,15 +153,31 @@ export const StocksView: React.FC<StocksViewProps> = ({ stocks, onOpenTrade }) =
             <tbody className="divide-y divide-gray-100">
               {filteredStocks.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="py-8 text-center text-gray-500 text-sm">
-                    No Indian stocks matching "{searchTerm}" found.
+                  <td colSpan={8} className="py-8 text-center text-gray-500 text-sm">
+                    {viewFilter === 'WATCHLIST'
+                      ? 'No stocks in your watchlist yet. Click the star icon (☆) on any stock to add it.'
+                      : `No Indian stocks matching "${searchTerm}" found.`}
                   </td>
                 </tr>
               ) : (
                 filteredStocks.map((stock) => {
                   const isUp = (stock.priceChange ?? 0) >= 0;
+                  const isWatched = watchlistSymbols.has(stock.symbol);
+
                   return (
-                    <tr key={stock.symbol} className="hover:bg-gray-50/75">
+                    <tr key={stock.symbol} className="hover:bg-gray-50/75 transition">
+                      <td className="py-3 px-3 text-center">
+                        <button
+                          onClick={() => handleToggleWatchlist(stock.symbol)}
+                          disabled={!currentUser?.userId || isTogglingSymbol === stock.symbol}
+                          title={isWatched ? 'Remove from Watchlist' : 'Add to Watchlist'}
+                          className={`p-1 text-base rounded hover:scale-110 transition cursor-pointer disabled:opacity-50 ${
+                            isWatched ? 'text-amber-500' : 'text-slate-300 hover:text-amber-400'
+                          }`}
+                        >
+                          {isWatched ? '⭐' : '☆'}
+                        </button>
+                      </td>
                       <td className="py-3 px-3">
                         <span className="inline-block px-1.5 py-0.5 rounded text-[11px] font-semibold bg-gray-100 text-gray-700 border border-gray-200 font-mono">
                           {stock.exchange || 'NSE'}
@@ -114,13 +209,13 @@ export const StocksView: React.FC<StocksViewProps> = ({ stocks, onOpenTrade }) =
                         <div className="inline-flex space-x-2">
                           <button
                             onClick={() => onOpenTrade(stock, 'BUY')}
-                            className="px-3 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded text-xs font-semibold transition"
+                            className="px-3 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded text-xs font-semibold transition cursor-pointer shadow-xs"
                           >
                             BUY
                           </button>
                           <button
                             onClick={() => onOpenTrade(stock, 'SELL')}
-                            className="px-3 py-1 bg-red-600 hover:bg-red-700 text-white rounded text-xs font-semibold transition"
+                            className="px-3 py-1 bg-red-600 hover:bg-red-700 text-white rounded text-xs font-semibold transition cursor-pointer shadow-xs"
                           >
                             SELL
                           </button>

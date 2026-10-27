@@ -11,6 +11,7 @@ import { TraderSettingsView } from './components/trader/TraderSettingsView';
 import { TradeModal } from './components/trader/TradeModal';
 import { AdminDashboard } from './components/admin/AdminDashboard';
 import { JavaInspectorModal } from './components/JavaInspectorModal';
+import { DatabaseStatusModal } from './components/DatabaseStatusModal';
 import { NewUserWelcomeView } from './components/NewUserWelcomeView';
 import { User, Stock, Trade, Portfolio, MarketUpdate, NotificationItem } from './types';
 import { api } from './services/api';
@@ -29,6 +30,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<string>('dashboard');
   const [showLoginModal, setShowLoginModal] = useState<boolean>(false);
   const [showJavaInspector, setShowJavaInspector] = useState<boolean>(false);
+  const [showDbStatus, setShowDbStatus] = useState<boolean>(false);
   const [isNewUserOnboarding, setIsNewUserOnboarding] = useState<boolean>(false);
 
   // Trade Modal State
@@ -180,6 +182,7 @@ export default function App() {
         onLogout={handleLogout}
         onTriggerTick={handleTriggerTick}
         onOpenRubric={() => setShowJavaInspector(true)}
+        onOpenDbHealth={() => setShowDbStatus(true)}
         isTicking={isTicking}
         marketStatus={marketStatus}
         notifications={notifications}
@@ -228,6 +231,7 @@ export default function App() {
             {activeTab === 'stocks' && (
               <StocksView
                 stocks={stocks}
+                currentUser={currentUser}
                 onOpenTrade={handleOpenTrade}
               />
             )}
@@ -305,6 +309,12 @@ export default function App() {
 
           <div className="flex items-center space-x-3 shrink-0">
             <button
+              onClick={() => setShowDbStatus(true)}
+              className="text-emerald-700 hover:text-emerald-900 font-bold bg-emerald-50 hover:bg-emerald-100 px-2.5 py-1 rounded-md border border-emerald-200 transition cursor-pointer"
+            >
+              🗄️ Relational DB Health
+            </button>
+            <button
               onClick={() => setShowJavaInspector(true)}
               className="text-purple-700 hover:text-purple-900 font-bold bg-purple-50 hover:bg-purple-100 px-2.5 py-1 rounded-md border border-purple-200 transition cursor-pointer"
             >
@@ -325,6 +335,12 @@ export default function App() {
       <JavaInspectorModal
         isOpen={showJavaInspector}
         onClose={() => setShowJavaInspector(false)}
+      />
+
+      {/* Relational Database Architecture & Live Status Modal */}
+      <DatabaseStatusModal
+        isOpen={showDbStatus}
+        onClose={() => setShowDbStatus(false)}
       />
     </div>
   );

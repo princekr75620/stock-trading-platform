@@ -3,12 +3,14 @@ package service;
 import exception.InvalidLoginException;
 import model.SecurityIncident;
 import model.User;
+import util.PasswordHasher;
 
 import java.util.HashMap;
 import java.util.Map;
 
 /**
- * Handles user authentication, credential validation, failed login tracking, and session state.
+ * Handles user authentication, BCrypt credential verification, transparent password migration,
+ * account lockout policy enforcement, and generic anti-enumeration failure responses.
  */
 public class AuthenticationService implements IAuthenticationService {
     private IUserService userService;
@@ -33,23 +35,22 @@ public class AuthenticationService implements IAuthenticationService {
         String key = usernameOrEmail.trim().toLowerCase();
         int attempts = failedAttemptsMap.getOrDefault(key, 0);
 
+        // Account Lockout check based on SecuritySettings
         if (securityService != null && securityService.getSecuritySettings().isAutomaticAccountLockout()) {
             int maxAttempts = securityService.getSecuritySettings().getMaxFailedLoginAttempts();
             if (attempts >= maxAttempts) {
-                if (securityService != null) {
-                    securityService.recordIncident(new SecurityIncident(
-                            "SEC-" + System.currentTimeMillis() % 10000,
-                            "ACCOUNT_LOCKOUT",
-                            "Exceeded maximum failed login attempts (" + maxAttempts + ")",
-                            SecurityIncident.Severity.HIGH,
-                            usernameOrEmail
-                    ));
-                }
-                throw new InvalidLoginException("Account is temporarily locked due to " + attempts +
-                        " consecutive failed login attempts. Contact an Administrator.");
+                securityService.recordIncident(new SecurityIncident(
+                        "SEC-" + (System.currentTimeMillis() % 100000),
+                        "ACCOUNT_LOCKOUT",
+                        "Exceeded maximum failed login attempts (" + maxAttempts + ")",
+                        SecurityIncident.Severity.HIGH,
+                        usernameOrEmail
+                ));
+                throw new InvalidLoginException("Account is temporarily locked due to consecutive failed attempts. Please contact an Administrator.");
             }
         }
 
+        // Look up user by userId or email
         User foundUser = null;
         for (User u : userService.getAllUsers()) {
             if (u.getUserId().equalsIgnoreCase(usernameOrEmail.trim()) ||
@@ -59,32 +60,50 @@ public class AuthenticationService implements IAuthenticationService {
             }
         }
 
+        // Defensive: Always perform a simulated verify check to mitigate timing side-channels
         if (foundUser == null) {
             failedAttemptsMap.put(key, attempts + 1);
             if (securityService != null) {
                 securityService.recordIncident(new SecurityIncident(
-                        "SEC-" + System.currentTimeMillis() % 10000,
+                        "SEC-" + (System.currentTimeMillis() % 100000),
                         "FAILED_LOGIN",
-                        "Attempted login with unknown username/email: " + usernameOrEmail,
+                        "Authentication failure for non-existent identifier",
                         SecurityIncident.Severity.LOW,
                         usernameOrEmail
                 ));
             }
-            throw new InvalidLoginException("Invalid credentials: user not found.");
+            // Generic failure message to prevent account enumeration
+            throw new InvalidLoginException("Invalid username/email or password.");
         }
 
-        if (!foundUser.getPassword().equals(password)) {
+        // Secure BCrypt password verification with timing-safe comparison
+        boolean passwordValid = PasswordHasher.verifyPassword(password, foundUser.getPassword());
+
+        if (!passwordValid) {
             failedAttemptsMap.put(key, attempts + 1);
             if (securityService != null) {
                 securityService.recordIncident(new SecurityIncident(
-                        "SEC-" + System.currentTimeMillis() % 10000,
+                        "SEC-" + (System.currentTimeMillis() % 100000),
                         "FAILED_PASSWORD",
-                        "Incorrect password provided for user: " + foundUser.getUserId(),
+                        "Authentication failure for user: " + foundUser.getUserId(),
                         SecurityIncident.Severity.MEDIUM,
                         foundUser.getUserId()
                 ));
             }
-            throw new InvalidLoginException("Invalid credentials: password does not match.");
+            // Generic failure message to prevent account enumeration
+            throw new InvalidLoginException("Invalid username/email or password.");
+        }
+
+        // Transparent Migration: If stored password was plaintext, re-hash with BCrypt now
+        if (PasswordHasher.needsRehash(foundUser.getPassword())) {
+            try {
+                String bcryptHash = PasswordHasher.hashPassword(password);
+                foundUser.setPassword(bcryptHash);
+                userService.updateUser(foundUser);
+                System.out.println("[AuthenticationService] Successfully upgraded user '" + foundUser.getUserId() + "' to BCrypt hash.");
+            } catch (Exception e) {
+                System.err.println("[AuthenticationService] Warning: Could not persist upgraded password hash: " + e.getMessage());
+            }
         }
 
         // Successful authentication

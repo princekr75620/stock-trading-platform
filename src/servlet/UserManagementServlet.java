@@ -25,6 +25,10 @@ public class UserManagementServlet extends BaseServlet {
     protected void doGet(HttpServletRequest request, HttpServletResponse response)
             throws ServletException, IOException {
 
+        if (!ensureAdmin(request, response)) {
+            return;
+        }
+
         String query = request.getParameter("query");
         List<User> list;
         if (query != null && !query.trim().isEmpty()) {
@@ -39,6 +43,10 @@ public class UserManagementServlet extends BaseServlet {
     @Override
     protected void doPost(HttpServletRequest request, HttpServletResponse response)
             throws ServletException, IOException {
+
+        if (!ensureAdmin(request, response)) {
+            return;
+        }
 
         Map<String, String> body = parseJsonBody(request);
         String action = body.get("action");

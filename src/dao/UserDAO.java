@@ -119,6 +119,13 @@ public class UserDAO implements UserDAOInterface {
     }
 
     @Override
+    public boolean updateBalance(String userId, double newBalance) throws SQLException {
+        try (Connection conn = DBConnection.getConnection()) {
+            return updateBalance(conn, userId, newBalance);
+        }
+    }
+
+    @Override
     public boolean delete(String userId) throws SQLException {
         String sql = "DELETE FROM users WHERE user_id = ?";
         try (Connection conn = DBConnection.getConnection();

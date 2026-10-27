@@ -157,7 +157,15 @@ public class TradingPlatformHttpServer {
         servletBridge.registerServlet("/api/admin/stocks/add", new AddStockServlet());
         servletBridge.registerServlet("/api/admin/stocks/update", new UpdateStockServlet());
         servletBridge.registerServlet("/api/admin/stocks/delete", new DeleteStockServlet());
-        System.out.println("[TradingPlatformHttpServer] Successfully registered 16 Java Servlets with AuthenticationFilter.");
+        servletBridge.registerServlet("/api/admin/security", new AdminSecurityServlet());
+        servletBridge.registerServlet("/api/admin/settings", new AdminSettingsServlet());
+        servletBridge.registerServlet("/api/admin/reports", new AdminReportServlet());
+        servletBridge.registerServlet("/api/market/tick", new MarketTickServlet());
+        servletBridge.registerServlet("/api/trader/deposit", new TraderPreferenceServlet());
+        servletBridge.registerServlet("/api/trader/preferences", new TraderPreferenceServlet());
+        servletBridge.registerServlet("/api/watchlist", new WatchlistServlet());
+        servletBridge.registerServlet("/api/db/health", new DatabaseHealthServlet());
+        System.out.println("[TradingPlatformHttpServer] Successfully registered 23 Java Servlets with AuthenticationFilter.");
     }
 
     public void start() {
@@ -206,6 +214,12 @@ public class TradingPlatformHttpServer {
             HttpServlet servlet = servletBridge.getServlet(path);
             if (servlet != null) {
                 servletBridge.dispatch(exchange, servlet, body);
+                return;
+            }
+
+            // Defensive: Block any unprotected fallback attempts on admin endpoints
+            if (path.startsWith("/api/admin")) {
+                sendJsonResponse(exchange, 403, "{\"success\":false,\"error\":\"Access denied: Administrator privileges required.\"}");
                 return;
             }
 

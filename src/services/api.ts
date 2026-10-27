@@ -294,4 +294,33 @@ export const api = {
     });
     return handleResponse(res);
   },
+
+  /**
+   * Retrieves live JDBC Database Health, Driver metadata, and table records count (Review 2).
+   */
+  async getDbHealth(): Promise<import('../types').DatabaseHealth> {
+    const res = await fetch(`${API_BASE}/db/health`);
+    return handleResponse(res);
+  },
+
+  /**
+   * Retrieves the trader's persisted stock watchlist.
+   */
+  async getWatchlist(userId?: string): Promise<{ success: boolean; watchlist: string[] }> {
+    const url = userId ? `${API_BASE}/watchlist?userId=${encodeURIComponent(userId)}` : `${API_BASE}/watchlist`;
+    const res = await fetch(url);
+    return handleResponse(res);
+  },
+
+  /**
+   * Toggles or adds/removes a stock from the trader's database-persisted watchlist.
+   */
+  async toggleWatchlist(symbol: string, userId?: string, action: 'add' | 'remove' | 'toggle' = 'toggle'): Promise<{ success: boolean; watchlist: string[] }> {
+    const res = await fetch(`${API_BASE}/watchlist`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ symbol, userId, action }),
+    });
+    return handleResponse(res);
+  },
 };

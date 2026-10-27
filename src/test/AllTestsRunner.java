@@ -12,6 +12,8 @@ public class AllTestsRunner {
 
         TradingServiceTest.main(args);
         PortfolioCalculationTest.main(args);
+        SecurityAndAuthTest.main(args);
+        DatabaseAndIntegrationTest.main(args);
 
         System.out.println("===============================================================");
         System.out.println("   ALL JAVA UNIT TESTS COMPLETED SUCCESSFULLY!                ");

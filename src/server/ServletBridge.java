@@ -123,10 +123,14 @@ public class ServletBridge {
             headers.set("Content-Type", "application/json;charset=UTF-8");
         }
 
-        // Set session cookie if new session created
+        // Set session cookie if new session created, or clear cookie if invalidated
         if (sessionHolder[0] != null) {
-            sessionStore.put(sessionHolder[0].getId(), sessionHolder[0]);
-            headers.add("Set-Cookie", "JSESSIONID=" + sessionHolder[0].getId() + "; Path=/; HttpOnly; SameSite=Lax");
+            if (sessionHolder[0].isValid()) {
+                sessionStore.put(sessionHolder[0].getId(), sessionHolder[0]);
+                headers.set("Set-Cookie", "JSESSIONID=" + sessionHolder[0].getId() + "; Path=/; HttpOnly; SameSite=Lax");
+            } else {
+                headers.set("Set-Cookie", "JSESSIONID=; Path=/; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT; HttpOnly; SameSite=Lax");
+            }
         }
 
         byte[] outBytes = responseBodyBuffer.toByteArray();
@@ -191,6 +195,9 @@ public class ServletBridge {
                             return exchange.getRequestHeaders().getFirst((String) args[0]);
                         case "getSession":
                             boolean create = (args != null && args.length > 0) ? (Boolean) args[0] : true;
+                            if (sessionHolder[0] != null && !sessionHolder[0].isValid()) {
+                                sessionHolder[0] = null;
+                            }
                             if (sessionHolder[0] == null && create) {
                                 sessionHolder[0] = new ServletBridgeSession(UUID.randomUUID().toString());
                             }
@@ -290,6 +297,7 @@ public class ServletBridge {
             attributes.clear();
             sessionStore.remove(id);
         }
+        public boolean isValid() { return valid; }
         @Override public boolean isNew() { return false; }
     }
 

@@ -20,6 +20,10 @@ public class AddStockServlet extends BaseServlet {
     protected void doPost(HttpServletRequest request, HttpServletResponse response)
             throws ServletException, IOException {
 
+        if (!ensureAdmin(request, response)) {
+            return;
+        }
+
         Map<String, String> body = parseJsonBody(request);
 
         String symbol = body.get("symbol");

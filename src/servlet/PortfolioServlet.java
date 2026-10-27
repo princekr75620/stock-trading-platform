@@ -3,6 +3,7 @@ package servlet;
 import model.Portfolio;
 import model.Trader;
 import model.User;
+import model.UserRole;
 import server.JsonHelper;
 
 import javax.servlet.ServletException;
@@ -12,8 +13,9 @@ import java.io.IOException;
 
 /**
  * Servlet providing Trader Portfolio holdings and valuation.
- * Handles GET /api/portfolio (checks session or traderId).
- * Fulfills Servlets & Portfolio Integration (Rubric Section 10) for GUVI Evaluation.
+ * Enforces cross-tenant portfolio isolation: users can only view their own portfolio,
+ * while Administrators can audit any trader portfolio.
+ * Fulfills Servlets & Portfolio Integration for GUVI Evaluation.
  */
 public class PortfolioServlet extends BaseServlet {
     private static final long serialVersionUID = 1L;
@@ -23,18 +25,36 @@ public class PortfolioServlet extends BaseServlet {
             throws ServletException, IOException {
 
         User user = getAuthenticatedUser(request);
-        String traderId = (user != null) ? user.getUserId() : request.getParameter("traderId");
+        String requestedId = request.getParameter("traderId");
 
-        if (traderId == null || traderId.trim().isEmpty()) {
-            sendJsonResponse(response, HttpServletResponse.SC_BAD_REQUEST,
-                    "{\"success\":false,\"error\":\"traderId query parameter or active login session is required.\"}");
+        String targetTraderId;
+        if (user != null) {
+            if (requestedId != null && !requestedId.trim().isEmpty()) {
+                // If requesting a specific portfolio, verify caller is owner or admin
+                if (user.getRole() != UserRole.ADMIN && !user.getUserId().equalsIgnoreCase(requestedId.trim())) {
+                    sendJsonResponse(response, HttpServletResponse.SC_FORBIDDEN,
+                            "{\"success\":false,\"error\":\"Access denied: Cannot access another user's portfolio.\"}");
+                    return;
+                }
+                targetTraderId = requestedId.trim();
+            } else {
+                targetTraderId = user.getUserId();
+            }
+        } else if (requestedId != null && !requestedId.trim().isEmpty()) {
+            // Unauthenticated request attempting to view portfolio
+            sendJsonResponse(response, HttpServletResponse.SC_UNAUTHORIZED,
+                    "{\"success\":false,\"error\":\"Authentication required. Please log in to view portfolio.\"}");
+            return;
+        } else {
+            sendJsonResponse(response, HttpServletResponse.SC_UNAUTHORIZED,
+                    "{\"success\":false,\"error\":\"Authentication required. Please log in.\"}");
             return;
         }
 
-        Portfolio portfolio = portfolioService.getOrCreatePortfolio(traderId.trim());
+        Portfolio portfolio = portfolioService.getOrCreatePortfolio(targetTraderId);
         User u = null;
         try {
-            u = userService.getUserById(traderId.trim());
+            u = userService.getUserById(targetTraderId);
         } catch (Exception ignored) {}
         Trader trader = (u instanceof Trader) ? (Trader) u : null;
         String json = JsonHelper.portfolioToJson(portfolio, trader, marketUpdateService.getStockMap());

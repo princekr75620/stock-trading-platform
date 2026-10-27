@@ -154,6 +154,70 @@
         <url-pattern>/api/admin/stocks/delete</url-pattern>
     </servlet-mapping>
 
+    <servlet>
+        <servlet-name>AdminSecurityServlet</servlet-name>
+        <servlet-class>servlet.AdminSecurityServlet</servlet-class>
+    </servlet>
+    <servlet-mapping>
+        <servlet-name>AdminSecurityServlet</servlet-name>
+        <url-pattern>/api/admin/security</url-pattern>
+    </servlet-mapping>
+
+    <servlet>
+        <servlet-name>AdminSettingsServlet</servlet-name>
+        <servlet-class>servlet.AdminSettingsServlet</servlet-class>
+    </servlet>
+    <servlet-mapping>
+        <servlet-name>AdminSettingsServlet</servlet-name>
+        <url-pattern>/api/admin/settings</url-pattern>
+    </servlet-mapping>
+
+    <servlet>
+        <servlet-name>AdminReportServlet</servlet-name>
+        <servlet-class>servlet.AdminReportServlet</servlet-class>
+    </servlet>
+    <servlet-mapping>
+        <servlet-name>AdminReportServlet</servlet-name>
+        <url-pattern>/api/admin/reports</url-pattern>
+    </servlet-mapping>
+
+    <servlet>
+        <servlet-name>MarketTickServlet</servlet-name>
+        <servlet-class>servlet.MarketTickServlet</servlet-class>
+    </servlet>
+    <servlet-mapping>
+        <servlet-name>MarketTickServlet</servlet-name>
+        <url-pattern>/api/market/tick</url-pattern>
+    </servlet-mapping>
+
+    <servlet>
+        <servlet-name>TraderPreferenceServlet</servlet-name>
+        <servlet-class>servlet.TraderPreferenceServlet</servlet-class>
+    </servlet>
+    <servlet-mapping>
+        <servlet-name>TraderPreferenceServlet</servlet-name>
+        <url-pattern>/api/trader/deposit</url-pattern>
+        <url-pattern>/api/trader/preferences</url-pattern>
+    </servlet-mapping>
+
+    <servlet>
+        <servlet-name>WatchlistServlet</servlet-name>
+        <servlet-class>servlet.WatchlistServlet</servlet-class>
+    </servlet>
+    <servlet-mapping>
+        <servlet-name>WatchlistServlet</servlet-name>
+        <url-pattern>/api/watchlist</url-pattern>
+    </servlet-mapping>
+
+    <servlet>
+        <servlet-name>DatabaseHealthServlet</servlet-name>
+        <servlet-class>servlet.DatabaseHealthServlet</servlet-class>
+    </servlet>
+    <servlet-mapping>
+        <servlet-name>DatabaseHealthServlet</servlet-name>
+        <url-pattern>/api/db/health</url-pattern>
+    </servlet-mapping>
+
     <session-config>
         <session-timeout>30</session-timeout>
     </session-config>

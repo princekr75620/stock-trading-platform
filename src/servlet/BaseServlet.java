@@ -1,6 +1,7 @@
 package servlet;
 
 import model.User;
+import model.UserRole;
 import server.JsonHelper;
 import service.*;
 
@@ -13,11 +14,12 @@ import java.io.BufferedReader;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
+import java.util.UUID;
 
 /**
  * Abstract Base Servlet providing common utilities for Request/Response handling,
- * Session management, JSON processing, and shared Service instances.
- * Fulfills Servlets & Web Integration (Rubric Section 10) for GUVI Evaluation.
+ * Session management, JSON processing, defensive RBAC authorization, and shared Service instances.
+ * Fulfills Servlets & Web Integration for GUVI Evaluation.
  */
 public abstract class BaseServlet extends HttpServlet {
     private static final long serialVersionUID = 1L;
@@ -102,13 +104,21 @@ public abstract class BaseServlet extends HttpServlet {
     }
 
     /**
-     * Stores user into session after successful login.
+     * Stores user into session after successful login with session fixation protection.
      */
     protected void setAuthenticatedUser(HttpServletRequest request, User user) {
-        HttpSession session = request.getSession(true);
-        session.setAttribute("user", user);
-        session.setAttribute("userId", user.getUserId());
-        session.setAttribute("role", user.getRole().name());
+        // Invalidate old session to prevent session fixation attacks
+        HttpSession oldSession = request.getSession(false);
+        if (oldSession != null) {
+            oldSession.invalidate();
+        }
+
+        // Create fresh authenticated session with new session ID
+        HttpSession newSession = request.getSession(true);
+        newSession.setAttribute("user", user);
+        newSession.setAttribute("userId", user.getUserId());
+        newSession.setAttribute("role", user.getRole().name());
+        newSession.setAttribute("csrfToken", UUID.randomUUID().toString());
     }
 
     /**
@@ -119,5 +129,48 @@ public abstract class BaseServlet extends HttpServlet {
         if (session != null) {
             session.invalidate();
         }
+    }
+
+    /**
+     * Defensive authorization helper for Admin servlets.
+     * Verifies server session and role; writes appropriate JSON error if unauthorized.
+     *
+     * @return true if caller is an authorized ADMIN; false otherwise
+     */
+    protected boolean ensureAdmin(HttpServletRequest request, HttpServletResponse response) throws IOException {
+        User user = getAuthenticatedUser(request);
+        if (user == null) {
+            sendJsonResponse(response, HttpServletResponse.SC_UNAUTHORIZED,
+                    "{\"success\":false,\"error\":\"Authentication required. Please log in.\"}");
+            return false;
+        }
+        if (user.getRole() != UserRole.ADMIN) {
+            sendJsonResponse(response, HttpServletResponse.SC_FORBIDDEN,
+                    "{\"success\":false,\"error\":\"Access denied: Administrator privileges required.\"}");
+            return false;
+        }
+        return true;
+    }
+
+    /**
+     * Defensive authorization helper for user data isolation.
+     * Ensures caller is either an Admin or accessing their own resource.
+     *
+     * @return true if caller is authorized; false otherwise
+     */
+    protected boolean ensureOwnerOrAdmin(HttpServletRequest request, HttpServletResponse response, String targetUserId)
+            throws IOException {
+        User user = getAuthenticatedUser(request);
+        if (user == null) {
+            sendJsonResponse(response, HttpServletResponse.SC_UNAUTHORIZED,
+                    "{\"success\":false,\"error\":\"Authentication required. Please log in.\"}");
+            return false;
+        }
+        if (user.getRole() != UserRole.ADMIN && !user.getUserId().equalsIgnoreCase(targetUserId)) {
+            sendJsonResponse(response, HttpServletResponse.SC_FORBIDDEN,
+                    "{\"success\":false,\"error\":\"Access denied: Cannot access another user's account or portfolio.\"}");
+            return false;
+        }
+        return true;
     }
 }

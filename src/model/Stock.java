@@ -50,6 +50,11 @@ public class Stock implements Serializable {
         this.id = id;
     }
 
+    public Stock(int id, String symbol, String name, String exchange, double currentPrice, int availableQuantity) {
+        this(symbol, name, exchange, currentPrice, availableQuantity, "ACTIVE");
+        this.id = id;
+    }
+
     public Stock(int id, String symbol, String name, String exchange, double currentPrice, int availableQuantity, String status) {
         this(symbol, name, exchange, currentPrice, availableQuantity, status);
         this.id = id;

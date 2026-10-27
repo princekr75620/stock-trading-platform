@@ -38,15 +38,25 @@ public class BuyStockServlet extends BaseServlet {
         String qtyStr = body.get("quantity");
         if (qtyStr == null) qtyStr = request.getParameter("quantity");
 
-        // 2. Get logged-in user from session
+        // 2. Get logged-in user strictly from server-side session
         User sessionUser = getAuthenticatedUser(request);
-        String traderId = (sessionUser != null) ? sessionUser.getUserId() : body.get("traderId");
-        if (traderId == null) traderId = request.getParameter("traderId");
-
-        if (traderId == null || traderId.trim().isEmpty()) {
+        if (sessionUser == null) {
             sendJsonResponse(response, HttpServletResponse.SC_UNAUTHORIZED,
                     "{\"success\":false,\"error\":\"Please log in to execute trades.\"}");
             return;
+        }
+
+        String traderId = sessionUser.getUserId();
+        String requestedTraderId = body.get("traderId");
+        if (requestedTraderId == null) requestedTraderId = request.getParameter("traderId");
+        if (requestedTraderId != null && !requestedTraderId.trim().isEmpty()) {
+            if (sessionUser.getRole() == model.UserRole.ADMIN) {
+                traderId = requestedTraderId.trim();
+            } else if (!sessionUser.getUserId().equalsIgnoreCase(requestedTraderId.trim())) {
+                sendJsonResponse(response, HttpServletResponse.SC_FORBIDDEN,
+                        "{\"success\":false,\"error\":\"Access denied: Cannot execute trades on another user's account.\"}");
+                return;
+            }
         }
 
         if (symbol == null || symbol.trim().isEmpty()) {

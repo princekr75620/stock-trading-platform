@@ -135,3 +135,23 @@ export interface AdminStats {
   securityStatus: string;
   openIncidents: number;
 }
+
+export interface DatabaseHealth {
+  success: boolean;
+  status: 'CONNECTED' | 'DISCONNECTED';
+  databaseProduct: string;
+  databaseVersion: string;
+  driverName: string;
+  driverVersion: string;
+  engineType: string;
+  jdbcUrl: string;
+  tableCounts?: {
+    users?: number;
+    stocks?: number;
+    portfolio?: number;
+    transactions?: number;
+    watchlist?: number;
+  };
+  verifiedTables?: number;
+  timestamp: string;
+}

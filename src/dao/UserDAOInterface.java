@@ -16,5 +16,6 @@ public interface UserDAOInterface {
     boolean insert(User user) throws SQLException;
     boolean update(User user) throws SQLException;
     boolean updateBalance(Connection conn, String userId, double newBalance) throws SQLException;
+    boolean updateBalance(String userId, double newBalance) throws SQLException;
     boolean delete(String userId) throws SQLException;
 }

@@ -79,6 +79,13 @@ public class Portfolio implements Serializable {
         return saleProfit;
     }
 
+    /**
+     * Updates portfolio upon a SELL transaction using weighted average buy price as benchmark.
+     */
+    public synchronized double recordSell(String symbol, int quantity) {
+        return recordSell(symbol, quantity, getAverageBuyPrice(symbol));
+    }
+
     public int getQuantity(String symbol) {
         return holdings.getOrDefault(symbol.toUpperCase().trim(), 0);
     }

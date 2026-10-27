@@ -141,6 +141,18 @@ public class DBConnection {
                 ");"
             );
 
+            // 5. Watchlist Table
+            stmt.execute(
+                "CREATE TABLE IF NOT EXISTS watchlist (" +
+                "  id INTEGER PRIMARY KEY AUTOINCREMENT," +
+                "  user_id VARCHAR(50) NOT NULL," +
+                "  symbol VARCHAR(10) NOT NULL," +
+                "  added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP," +
+                "  UNIQUE(user_id, symbol)," +
+                "  FOREIGN KEY (user_id) REFERENCES users(user_id)" +
+                ");"
+            );
+
             // Seed initial data if tables are empty
             seedInitialData(conn);
 
@@ -157,14 +169,14 @@ public class DBConnection {
         try (PreparedStatement ps = conn.prepareStatement("SELECT COUNT(*) FROM users");
              ResultSet rs = ps.executeQuery()) {
             if (rs.next() && rs.getInt(1) == 0) {
-                System.out.println("[JDBC] Seeding initial users into relational database...");
+                System.out.println("[JDBC] Seeding initial users into relational database with BCrypt hashes...");
                 // Insert Admin
                 try (PreparedStatement ins = conn.prepareStatement(
                         "INSERT INTO users (user_id, name, email, password, role, balance, department) VALUES (?, ?, ?, ?, ?, ?, ?)")) {
                     ins.setString(1, "admin");
                     ins.setString(2, "Chief Risk Officer");
                     ins.setString(3, "admin@tradingplatform.internal");
-                    ins.setString(4, "ADMIN_SECURE_2026");
+                    ins.setString(4, PasswordHasher.hashPassword("admin123"));
                     ins.setString(5, "ADMIN");
                     ins.setDouble(6, 0.0);
                     ins.setString(7, "Enterprise Market Operations");
@@ -174,7 +186,7 @@ public class DBConnection {
                     ins.setString(1, "trader1");
                     ins.setString(2, "Alexander Morgan");
                     ins.setString(3, "alex.morgan@quantcap.com");
-                    ins.setString(4, "TRADER_2026");
+                    ins.setString(4, PasswordHasher.hashPassword("trader123"));
                     ins.setString(5, "TRADER");
                     ins.setDouble(6, 45280.00);
                     ins.setString(7, null);
@@ -184,7 +196,7 @@ public class DBConnection {
                     ins.setString(1, "trader2");
                     ins.setString(2, "Elena Rostova");
                     ins.setString(3, "elena.r@hedgealpha.io");
-                    ins.setString(4, "TRADER_2026");
+                    ins.setString(4, PasswordHasher.hashPassword("trader123"));
                     ins.setString(5, "TRADER");
                     ins.setDouble(6, 85600.00);
                     ins.setString(7, null);
@@ -284,5 +296,67 @@ public class DBConnection {
                 }
             }
         }
+
+        // Check if watchlist exists
+        try (PreparedStatement ps = conn.prepareStatement("SELECT COUNT(*) FROM watchlist");
+             ResultSet rs = ps.executeQuery()) {
+            if (rs.next() && rs.getInt(1) == 0) {
+                System.out.println("[JDBC] Seeding default Indian stock watchlists...");
+                try (PreparedStatement ins = conn.prepareStatement(
+                        "INSERT INTO watchlist (user_id, symbol) VALUES (?, ?)")) {
+                    String[][] defaultWatchlists = {
+                        {"trader1", "RELIANCE"},
+                        {"trader1", "TCS"},
+                        {"trader1", "INFY"},
+                        {"trader2", "TATAMOTORS"},
+                        {"trader2", "SBIN"}
+                    };
+                    for (String[] entry : defaultWatchlists) {
+                        ins.setString(1, entry[0]);
+                        ins.setString(2, entry[1]);
+                        ins.executeUpdate();
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Diagnostic Health Status Inspector.
+     * Evaluates live JDBC connectivity, database product, driver info, and table counts
+     * without exposing sensitive credentials or passwords.
+     */
+    public static java.util.Map<String, Object> getHealthStatus() {
+        java.util.Map<String, Object> map = new java.util.HashMap<>();
+        try (Connection conn = getConnection()) {
+            DatabaseMetaData meta = conn.getMetaData();
+            map.put("connected", true);
+            map.put("databaseProduct", meta.getDatabaseProductName());
+            map.put("databaseVersion", meta.getDatabaseProductVersion());
+            map.put("driverName", meta.getDriverName());
+            map.put("driverVersion", meta.getDriverVersion());
+            map.put("engineType", useMySQL ? "MySQL (Relational Production)" : "SQLite (Embedded Relational ACID)");
+            map.put("jdbcUrl", useMySQL ? "jdbc:mysql://[configured-host]:[port]/stock_trading" : "jdbc:sqlite:" + SQLITE_DB_PATH);
+
+            // Verified relational tables
+            String[] tables = {"users", "stocks", "portfolio", "transactions", "watchlist"};
+            java.util.Map<String, Integer> counts = new java.util.HashMap<>();
+            for (String tbl : tables) {
+                try (PreparedStatement ps = conn.prepareStatement("SELECT COUNT(*) FROM " + tbl);
+                     ResultSet rs = ps.executeQuery()) {
+                    if (rs.next()) {
+                        counts.put(tbl, rs.getInt(1));
+                    }
+                } catch (Exception ignored) {
+                    counts.put(tbl, 0);
+                }
+            }
+            map.put("tableCounts", counts);
+            map.put("verifiedTables", tables.length);
+        } catch (Exception e) {
+            map.put("connected", false);
+            map.put("error", e.getMessage());
+        }
+        return map;
     }
 }

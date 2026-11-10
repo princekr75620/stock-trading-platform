@@ -67,6 +67,10 @@ public class StockImportService {
                         String status = (parts.length >= 6) ? parts[5].trim().toUpperCase() : "ACTIVE";
 
                         Stock stock = new Stock(symbol, companyName, exchange, price, quantity, status);
+                        if (parts.length >= 7) stock.setPreviousPrice(Double.parseDouble(parts[6].trim()));
+                        if (parts.length >= 8) stock.setDayHigh(Double.parseDouble(parts[7].trim()));
+                        if (parts.length >= 9) stock.setDayLow(Double.parseDouble(parts[8].trim()));
+                        if (parts.length >= 10) stock.setVolumeTraded(Long.parseLong(parts[9].trim()));
                         stocksToImport.add(stock);
                     } catch (NumberFormatException nfe) {
                         System.err.println("[StockImportService] Skipping malformed row: " + line);

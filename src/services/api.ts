@@ -115,10 +115,17 @@ export const api = {
   },
 
   /**
-   * Manually triggers a simulated market price fluctuation across equities.
+   * Refreshes market prices from live financial feeds across Indian equities.
    */
   async triggerMarketTick(): Promise<{ success: boolean; message: string }> {
-    const res = await fetch(`${API_BASE}/market/tick`, { method: 'POST' });
+    const res = await fetch(`${API_BASE}/market/tick`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Requested-With': 'XMLHttpRequest'
+      },
+      body: JSON.stringify({})
+    });
     return handleResponse(res);
   },
 

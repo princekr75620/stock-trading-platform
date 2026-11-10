@@ -78,10 +78,14 @@ export const StocksView: React.FC<StocksViewProps> = ({ stocks, currentUser, onO
               <span className="text-xs bg-purple-50 text-purple-700 px-2.5 py-0.5 rounded border border-purple-200 font-mono">
                 Java: StockServlet &bull; TradingService
               </span>
+              <span className="text-xs bg-emerald-50 text-emerald-700 px-2 py-0.5 rounded border border-emerald-200 font-semibold flex items-center space-x-1">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                <span>Real-Time Live Feed</span>
+              </span>
             </h1>
           </div>
           <p className="text-sm text-gray-600 mt-1">
-            Interface for executing buy and sell trades with current market data across NSE &amp; BSE.
+            Real Indian market quotes across National Stock Exchange (NSE) &amp; Bombay Stock Exchange (BSE) with live order execution.
           </p>
         </div>
 

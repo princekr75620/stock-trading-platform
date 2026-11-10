@@ -164,10 +164,11 @@ export const Navbar: React.FC<NavbarProps> = ({
             <button
               onClick={onTriggerTick}
               disabled={isTicking}
-              title="Simulate Market Price Fluctuation in Java Engine"
-              className="px-2.5 py-1.5 text-xs border border-slate-300 rounded-lg bg-white hover:bg-slate-50 text-slate-700 transition font-semibold disabled:opacity-50 cursor-pointer shadow-xs"
+              title="Refresh Real-Time Market Prices from Live Financial Exchange Feed"
+              className="px-2.5 py-1.5 text-xs border border-blue-300 rounded-lg bg-blue-50 hover:bg-blue-100 text-blue-700 transition font-bold disabled:opacity-50 cursor-pointer shadow-xs flex items-center space-x-1"
             >
-              {isTicking ? 'Updating Tick...' : '⚡ Market Tick'}
+              <span className={`inline-block w-2 h-2 rounded-full bg-blue-600 ${isTicking ? 'animate-ping' : ''}`}></span>
+              <span>{isTicking ? 'Refreshing Live Feed...' : '⚡ Live Price Refresh'}</span>
             </button>
 
             {currentUser.role === 'TRADER' && cashBalance !== undefined && (

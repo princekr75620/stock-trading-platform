@@ -51,8 +51,9 @@ public class DBConnection {
             try {
                 return DriverManager.getConnection(mysqlUrl, MYSQL_USER, MYSQL_PASSWORD);
             } catch (SQLException e) {
-                System.err.println("[JDBC] Failed connecting to MySQL (" + e.getMessage() + "). Falling back to embedded SQLite.");
-                useMySQL = false;
+                // Explicit error without silent fallback when MySQL is explicitly requested
+                System.err.println("[JDBC] CRITICAL: Configured MySQL database is unreachable (" + e.getMessage() + ").");
+                throw new SQLException("Configured MySQL database connection failed: " + e.getMessage(), e);
             }
         }
 

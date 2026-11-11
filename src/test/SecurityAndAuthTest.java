@@ -14,8 +14,10 @@ import javax.servlet.ServletResponse;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 import javax.servlet.http.HttpSession;
+import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.PrintWriter;
+import java.io.StringReader;
 import java.io.StringWriter;
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Method;
@@ -55,6 +57,7 @@ public class SecurityAndAuthTest {
         testLegacyPasswordMigration();
         testValidAndInvalidLogin();
         testAccountLockoutPolicy();
+        testRegistrationAdminPrivilegeEscalationPrevented();
         testNormalUserDeniedAdminAccess();
         testForgedAdminHeadersRejected();
         testSessionHandlingAndLogout();
@@ -168,6 +171,42 @@ public class SecurityAndAuthTest {
             locked = e.getMessage().toLowerCase().contains("locked");
         }
         assertTrue(locked, "testAccountLockoutPolicy - Enforces automatic account lockout after threshold");
+    }
+
+    public static void testRegistrationAdminPrivilegeEscalationPrevented() {
+        servlet.RegisterServlet registerServlet = new servlet.RegisterServlet();
+        IUserService userService = new UserService(new HashMap<>());
+        servlet.BaseServlet.initializeServices(
+                userService, null, null, null, null, null, null, null, null
+        );
+
+        String hackerUid = "hacker_" + System.currentTimeMillis();
+        // Attempt 1: Client submits role: ADMIN via JSON payload
+        MockHttpServletRequest requestWithAdminRole = new MockHttpServletRequest("POST", "/api/auth/register", null);
+        requestWithAdminRole.headers.put("Content-Type", "application/json");
+        requestWithAdminRole.headers.put("X-Requested-With", "XMLHttpRequest");
+        requestWithAdminRole.body = String.format("{\"userId\":\"%s\",\"name\":\"Hacker\",\"email\":\"%s@test.com\",\"password\":\"HackerPass123!\",\"role\":\"ADMIN\",\"initialBalance\":99999999}", hackerUid, hackerUid);
+        MockHttpServletResponse response1 = new MockHttpServletResponse();
+
+        try {
+            registerServlet.doPost(requestWithAdminRole.toProxy(), response1.toProxy());
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+
+        assertTrue(response1.status == 201, "testRegistrationAdminPrivilegeEscalation - Public registration endpoint responds 201 Created");
+        User createdUser = null;
+        try {
+            createdUser = userService.getUserById(hackerUid);
+        } catch (Exception ignored) {}
+
+        assertTrue(createdUser != null, "testRegistrationAdminPrivilegeEscalation - Registered user entity created in service");
+        assertTrue(createdUser != null && createdUser.getRole() == UserRole.TRADER,
+                "testRegistrationAdminPrivilegeEscalation - Public registration with role=ADMIN forced to TRADER");
+        assertTrue(createdUser != null && createdUser.getRole() != UserRole.ADMIN,
+                "testRegistrationAdminPrivilegeEscalation - Public registration strictly denied ADMIN role");
+        assertTrue(createdUser != null && createdUser.getBalance() == 50000.0,
+                "testRegistrationAdminPrivilegeEscalation - Client-supplied initialBalance 99999999 rejected; default 50000.0 enforced");
     }
 
     public static void testNormalUserDeniedAdminAccess() {
@@ -358,6 +397,7 @@ public class SecurityAndAuthTest {
         MockSession session;
         Map<String, String> headers = new HashMap<>();
         Map<String, String> parameters = new HashMap<>();
+        String body = "";
 
         MockHttpServletRequest(String method, String uri, MockSession session) {
             this.method = method;
@@ -375,8 +415,12 @@ public class SecurityAndAuthTest {
                             case "getRequestURI": return uri;
                             case "getHeader": return headers.get(args[0]);
                             case "getParameter": return parameters.get(args[0]);
+                            case "getReader": return new BufferedReader(new StringReader(body != null ? body : ""));
                             case "getSession":
                                 boolean create = (args != null && args.length > 0) ? (Boolean) args[0] : true;
+                                if (session == null && create) {
+                                    session = new MockSession("sess-auto-" + System.currentTimeMillis());
+                                }
                                 if (session != null && session.isValid()) return session.toProxy();
                                 return null;
                             default: return null;

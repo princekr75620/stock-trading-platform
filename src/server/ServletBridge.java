@@ -191,8 +191,23 @@ public class ServletBridge {
                             String[] vals = paramMap.get(args[0]);
                             return (vals != null && vals.length > 0) ? vals[0] : null;
                         case "getParameterMap": return paramMap;
-                        case "getHeader":
-                            return exchange.getRequestHeaders().getFirst((String) args[0]);
+                        case "getHeader": {
+                            String headerName = (String) args[0];
+                            for (Map.Entry<String, List<String>> entry : exchange.getRequestHeaders().entrySet()) {
+                                if (entry.getKey().equalsIgnoreCase(headerName) && !entry.getValue().isEmpty()) {
+                                    return entry.getValue().get(0);
+                                }
+                            }
+                            return null;
+                        }
+                        case "getContentType": {
+                            for (Map.Entry<String, List<String>> entry : exchange.getRequestHeaders().entrySet()) {
+                                if (entry.getKey().equalsIgnoreCase("Content-Type") && !entry.getValue().isEmpty()) {
+                                    return entry.getValue().get(0);
+                                }
+                            }
+                            return null;
+                        }
                         case "getSession":
                             boolean create = (args != null && args.length > 0) ? (Boolean) args[0] : true;
                             if (sessionHolder[0] != null && !sessionHolder[0].isValid()) {

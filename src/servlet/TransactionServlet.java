@@ -23,8 +23,20 @@ public class TransactionServlet extends BaseServlet {
             throws ServletException, IOException {
 
         User user = getAuthenticatedUser(request);
+        if (user == null) {
+            sendJsonResponse(response, HttpServletResponse.SC_UNAUTHORIZED,
+                    "{\"success\":false,\"error\":\"Authentication required to access trade records.\"}");
+            return;
+        }
+
         String traderId = request.getParameter("traderId");
-        if (traderId == null && user != null && !user.hasAdminPrivileges()) {
+        if (traderId != null && !traderId.trim().isEmpty()) {
+            if (!user.hasAdminPrivileges() && !user.getUserId().equalsIgnoreCase(traderId.trim())) {
+                sendJsonResponse(response, HttpServletResponse.SC_FORBIDDEN,
+                        "{\"success\":false,\"error\":\"Access denied: Cannot access another user's transaction history.\"}");
+                return;
+            }
+        } else if (!user.hasAdminPrivileges()) {
             traderId = user.getUserId();
         }
 

@@ -24,12 +24,23 @@ public class DashboardServlet extends BaseServlet {
             throws ServletException, IOException {
 
         User user = getAuthenticatedUser(request);
-        String userId = (user != null) ? user.getUserId() : request.getParameter("traderId");
-
-        if (userId == null) {
+        if (user == null) {
             sendJsonResponse(response, HttpServletResponse.SC_UNAUTHORIZED,
                     "{\"success\":false,\"error\":\"Authentication required for dashboard access.\"}");
             return;
+        }
+
+        String userId = user.getUserId();
+        String requestedId = request.getParameter("traderId");
+        if (requestedId != null && !requestedId.trim().isEmpty()) {
+            if (!user.hasAdminPrivileges() && !user.getUserId().equalsIgnoreCase(requestedId.trim())) {
+                sendJsonResponse(response, HttpServletResponse.SC_FORBIDDEN,
+                        "{\"success\":false,\"error\":\"Access denied: Cannot access another user's dashboard.\"}");
+                return;
+            }
+            if (user.hasAdminPrivileges()) {
+                userId = requestedId.trim();
+            }
         }
 
         Portfolio portfolio = portfolioService.getOrCreatePortfolio(userId);

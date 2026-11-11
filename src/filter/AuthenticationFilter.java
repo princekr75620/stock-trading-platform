@@ -116,6 +116,8 @@ public class AuthenticationFilter implements Filter {
         if (path == null) return true;
         return path.equals("/api/auth/login") ||
                path.equals("/api/auth/register") ||
+               path.equals("/api/auth/session") ||
+               path.equals("/api/auth/logout") ||
                path.equals("/api/health") ||
                path.equals("/api/db/health") ||
                path.equals("/api/stocks") ||

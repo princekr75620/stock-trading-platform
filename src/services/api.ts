@@ -56,6 +56,17 @@ export const api = {
   },
 
   /**
+   * Validates active server session and retrieves currently authenticated user.
+   */
+  async getSession(): Promise<{ authenticated: boolean; user: User | null }> {
+    const res = await fetch(`${API_BASE}/auth/session`);
+    if (res.status === 401) {
+      return { authenticated: false, user: null };
+    }
+    return handleResponse(res);
+  },
+
+  /**
    * Retrieves the live list of all Indian equities (NSE & BSE) listed on the exchange.
    */
   async getStocks(): Promise<Stock[]> {

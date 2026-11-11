@@ -38,7 +38,7 @@ The **Java Web-Based Indian Stock Trading Platform** (*Bharat Equities Exchange*
 
 | Evaluation Criteria | Maximum Marks | Implementation Details & Proof Points in Codebase |
 |---|:---:|---|
-| **Code Quality & Testing** | **10 Marks** | • 5-tier modular separation: Model, DAO, Service, Servlet, Util.<br>• 71/71 passing automated Java unit & integration tests (`test.AllTestsRunner`).<br>• BCrypt password hashing & automatic plaintext migration (`src/util/PasswordHasher.java`).<br>• Session fixation defense & strict RBAC filter (`src/filter/AuthenticationFilter.java`).<br>• Parameterized queries (`PreparedStatement`) eliminating SQL injection.<br>• Atomic ACID transactions with `conn.setAutoCommit(false)`, `commit()`, and `rollback()`. |
+| **Code Quality & Testing** | **10 Marks** | • 5-tier modular separation: Model, DAO, Service, Servlet, Util.<br>• 77/77 passing automated Java unit & integration tests (`test.AllTestsRunner`).<br>• BCrypt password hashing & automatic plaintext migration (`src/util/PasswordHasher.java`).<br>• Session fixation defense & strict RBAC filter (`src/filter/AuthenticationFilter.java`).<br>• Server-side session verification via `/api/auth/session` & public admin escalation prevention.<br>• Parameterized queries (`PreparedStatement`) eliminating SQL injection.<br>• Atomic ACID transactions with `conn.setAutoCommit(false)`, `commit()`, and `rollback()`. |
 | **Teamwork & Collaboration** | **5 Marks** | • Standardized Git feature-branching workflow (`feature/*`, `bugfix/*`).<br>• Pull Request template and code review checklist.<br>• Documented team role placeholders (Backend Lead, Database Architect, Frontend Lead, QA Engineer).<br>• Clean, self-contained build scripts (`compile.sh`, `run.sh`, `pom.xml`, `package.json`).<br>• Zero-configuration onboarding for new teammates and evaluators. |
 | **Innovation / Extra Effort** | **2 Marks** | • **Interactive Stock Watchlist**: Database-persisted multi-user watchlist with star toggle and filtered views.<br>• **Live JDBC Database Health Modal**: Real-time diagnostic inspector displaying active database engine, JDBC driver, connection status, table record counts, and schema verification.<br>• **Fee Breakdown Order Ticket**: Instant calculation of SEBI turnover fees, stamp duty, exchange turnover charges, and brokerage.<br>• **Dual Database Fallback**: Embedded SQLite out-of-the-box fallback with seamless MySQL compatibility. |
 
@@ -332,9 +332,9 @@ The user interface was engineered to provide a clean, institutional-grade tradin
 ---
 
 ## 7. Code Quality, Testing & Security Hardening (10 Marks)
-
-### Automated Test Suite Execution Results (71/71 Tests Passed)
-The test runner (`src/test/AllTestsRunner.java`) executes 4 comprehensive test suites covering all 8 criteria mandated for Review 2:
+ 
+### Automated Test Suite Execution Results (77/77 Tests Passed)
+The test runner (`src/test/AllTestsRunner.java`) executes 4 comprehensive test suites covering all criteria mandated for Reviews 1 & 2:
 
 ```
 ===============================================================
@@ -362,21 +362,35 @@ PortfolioCalculationTest Results: 4/4 Passed.
   ✓ PASS: testPasswordVerification - Rejects wrong password
   ✓ PASS: testPasswordHashing - Never stores plaintext password
   ✓ PASS: testLegacyPasswordMigration - Detects legacy plaintext requires rehash
+  ✓ PASS: testLegacyPasswordMigration - Successfully logs in with legacy password
   ✓ PASS: testLegacyPasswordMigration - Transparently upgraded to BCrypt hash upon login
+  ✓ PASS: testLegacyPasswordMigration - Upgraded hash verifies accurately
   ✓ PASS: testValidLogin - Successfully authenticates with valid credentials
   ✓ PASS: testInvalidLogin - Returns generic message on bad password
   ✓ PASS: testInvalidLogin - Returns generic message on unknown user (no account enumeration)
   ✓ PASS: testInvalidLogin - Generic error messages are identical, mitigating enumeration risks
   ✓ PASS: testAccountLockoutPolicy - Enforces automatic account lockout after threshold
+  ✓ PASS: testRegistrationAdminPrivilegeEscalation - Public registration endpoint responds 201 Created
+  ✓ PASS: testRegistrationAdminPrivilegeEscalation - Registered user entity created in service
+  ✓ PASS: testRegistrationAdminPrivilegeEscalation - Public registration with role=ADMIN forced to TRADER
+  ✓ PASS: testRegistrationAdminPrivilegeEscalation - Public registration strictly denied ADMIN role
+  ✓ PASS: testRegistrationAdminPrivilegeEscalation - Client-supplied initialBalance 99999999 rejected; default 50000.0 enforced
   ✓ PASS: testNormalUserDeniedAdminAccess - HTTP 403 Forbidden returned for TRADER on /api/admin/*
+  ✓ PASS: testNormalUserDeniedAdminAccess - Appropriate authorization error message returned
   ✓ PASS: testForgedAdminHeadersRejected - Forged header X-User-Id: admin rejected without session (HTTP 401)
   ✓ PASS: testForgedAdminHeadersRejected - TRADER with forged admin header strictly denied (HTTP 403)
   ✓ PASS: testSessionHandling - Session stores authenticated user
+  ✓ PASS: testSessionHandling - Session is active before logout
   ✓ PASS: testSessionHandlingAndLogout - Session invalidated on logout
+  ✓ PASS: testSessionHandlingAndLogout - User attribute purged upon session invalidation
   ✓ PASS: testPortfolioCrossTenantIsolation - Trader1 denied access to Trader2 portfolio (HTTP 403)
-  ✓ PASS: testInvalidTradeRequests - Zero and negative share orders rejected with InvalidInputException
+  ✓ PASS: testPortfolioCrossTenantIsolation - Appropriate cross-tenant access denied message
+  ✓ PASS: testPortfolioCrossTenantIsolation - Trader accessing own portfolio is permitted
+  ✓ PASS: testInvalidTradeRequests - Zero share order rejected with InvalidInputException
+  ✓ PASS: testInvalidTradeRequests - Negative share order rejected with InvalidInputException
   ✓ PASS: testInvalidTradeRequests - Order exceeding cash balance caught InsufficientBalanceException
-SecurityAndAuthTest Results: 28/28 Passed.
+  ✓ PASS: testInvalidTradeRequests - Order exceeding available float caught InsufficientStockQuantityException
+SecurityAndAuthTest Results: 33/33 Passed.
 
 ===============================================================
    REVIEW 2 EVALUATION: DATABASE & INTEGRATION TEST SUITE      
@@ -401,10 +415,10 @@ SecurityAndAuthTest Results: 28/28 Passed.
   ✓ PASS: CRUD-5: WatchlistDAO addToWatchlist successfully stored in database
   ✓ PASS: CRUD-6: WatchlistDAO removeFromWatchlist removed item from database
 >>> 4. Testing Stock Listing & Portfolio Retrieval...
-  ✓ PASS: LIST-1: StockDAO returned 20 Indian listed equities
-  ✓ PASS: LIST-2: RELIANCE stock entity mapped with exchange and current price in INR (₹2980.5)
+  ✓ PASS: LIST-1: StockDAO returned 59 Indian listed equities
+  ✓ PASS: LIST-2: RELIANCE stock entity mapped with exchange and current price in INR (₹1324.4)
   ✓ PASS: LIST-3: PortfolioDAO findByUserId retrieved trader portfolio record
-  ✓ PASS: LIST-4: Portfolio valuation computed against market prices: ₹152401.8
+  ✓ PASS: LIST-4: Portfolio valuation computed against market prices
 >>> 5. Testing Invalid Buy/Sell Requests...
   ✓ PASS: VAL-1: Zero share buy order rejected with InvalidInputException
   ✓ PASS: VAL-2: Negative share buy order rejected with InvalidInputException
@@ -425,16 +439,18 @@ SecurityAndAuthTest Results: 28/28 Passed.
 
 DatabaseAndIntegrationTest Results: 33/33 Passed.
 ===============================================================
-   ALL 71 JAVA UNIT TESTS COMPLETED SUCCESSFULLY (100% PASS)  
+   ALL 77 JAVA UNIT TESTS COMPLETED SUCCESSFULLY (100% PASS)  
 ===============================================================
 ```
 
 ### Security Hardening Summary
 1. **jBCrypt Password Hashing (`src/util/PasswordHasher.java`)**: Replaced deprecated base64 encoding with Damien Miller jBCrypt ($2a$12$). Plaintext passwords are never stored. Includes automatic transparent re-hashing upon login for legacy accounts.
 2. **Session Hijacking & Header Spoofing Elimination (`src/filter/AuthenticationFilter.java`)**: Replaced client-supplied `X-User-Id` headers with strict server-side `HttpSession` verification (`session.getAttribute("user")`).
-3. **Cross-Tenant Isolation (`PortfolioServlet.java`)**: Traders can only view their own holdings. Requests for other trader IDs are rejected with `HTTP 403 Forbidden`.
-4. **Session Fixation Defense (`BaseServlet.java`)**: Old sessions are explicitly invalidated and replaced with fresh session IDs upon successful authentication.
-5. **Account Enumeration Mitigation**: Generic, timing-constant error messages ("Invalid username or password") prevent attackers from verifying whether an email exists.
+3. **Admin Privilege Escalation Prevention (`src/servlet/RegisterServlet.java`)**: Public user registration strictly assigns `UserRole.TRADER` and the standard opening balance (₹50,000.0). Client-supplied `role=ADMIN` or custom balance overrides are strictly ignored.
+4. **Server-Side Session Lifecycle (`src/servlet/AuthSessionServlet.java` & `src/App.tsx`)**: Frontend never relies on `localStorage` as proof of authorization. The application verifies session validity on every boot via `GET /api/auth/session` and restores trusted user state.
+5. **Cross-Tenant Isolation (`PortfolioServlet.java` & `TransactionServlet.java`)**: Traders can only view their own holdings and trades. Requests for other trader IDs are rejected with `HTTP 403 Forbidden`.
+6. **Session Fixation Defense (`BaseServlet.java`)**: Old sessions are explicitly invalidated and replaced with fresh session IDs upon successful authentication.
+7. **Account Enumeration Mitigation**: Generic, timing-constant error messages ("Invalid username/email or password.") prevent attackers from verifying whether an email exists.
 
 ---
 

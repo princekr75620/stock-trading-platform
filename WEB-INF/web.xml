@@ -46,6 +46,15 @@
         <url-pattern>/api/auth/logout</url-pattern>
     </servlet-mapping>
 
+    <servlet>
+        <servlet-name>AuthSessionServlet</servlet-name>
+        <servlet-class>servlet.AuthSessionServlet</servlet-class>
+    </servlet>
+    <servlet-mapping>
+        <servlet-name>AuthSessionServlet</servlet-name>
+        <url-pattern>/api/auth/session</url-pattern>
+    </servlet-mapping>
+
     <!-- 3. TRADING & MARKET SERVLETS -->
     <servlet>
         <servlet-name>DashboardServlet</servlet-name>

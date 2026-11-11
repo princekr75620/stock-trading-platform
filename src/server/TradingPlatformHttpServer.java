@@ -144,6 +144,7 @@ public class TradingPlatformHttpServer {
         servletBridge.registerServlet("/api/auth/login", new LoginServlet());
         servletBridge.registerServlet("/api/auth/register", new RegisterServlet());
         servletBridge.registerServlet("/api/auth/logout", new LogoutServlet());
+        servletBridge.registerServlet("/api/auth/session", new AuthSessionServlet());
         servletBridge.registerServlet("/api/dashboard", new DashboardServlet());
         servletBridge.registerServlet("/api/stocks", new StockServlet());
         servletBridge.registerServlet("/api/trades/buy", new BuyStockServlet());

@@ -17,15 +17,9 @@ import { User, Stock, Trade, Portfolio, MarketUpdate, NotificationItem } from '.
 import { api } from './services/api';
 
 export default function App() {
-  // User state: restored from localStorage if user created/logged in, otherwise starts at Login/Welcome
-  const [currentUser, setCurrentUser] = useState<User | null>(() => {
-    try {
-      const saved = localStorage.getItem('bharat_active_user');
-      return saved ? JSON.parse(saved) : null;
-    } catch {
-      return null;
-    }
-  });
+  // Authoritative server-side session state (never trust raw client-manipulated localStorage)
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [isAuthChecking, setIsAuthChecking] = useState<boolean>(true);
 
   const [activeTab, setActiveTab] = useState<string>('dashboard');
   const [showLoginModal, setShowLoginModal] = useState<boolean>(false);
@@ -92,12 +86,29 @@ export default function App() {
     }
   }, []);
 
-  // Initial load
+  // Authoritative server-side session check on initial load & restore
   useEffect(() => {
+    let isMounted = true;
+    api.getSession()
+      .then((session) => {
+        if (!isMounted) return;
+        if (session && session.authenticated && session.user) {
+          setCurrentUser(session.user);
+          loadUserData(session.user);
+        } else {
+          setCurrentUser(null);
+        }
+      })
+      .catch(() => {
+        if (isMounted) setCurrentUser(null);
+      })
+      .finally(() => {
+        if (isMounted) setIsAuthChecking(false);
+      });
+
     loadPlatformData();
-    if (currentUser) {
-      loadUserData(currentUser);
-    }
+
+    return () => { isMounted = false; };
   }, [loadPlatformData, loadUserData]);
 
   // Periodic polling to keep prices and balances fresh
@@ -138,11 +149,13 @@ export default function App() {
     }
   };
 
-  const handleLogout = () => {
-    setCurrentUser(null);
+  const handleLogout = async () => {
     try {
-      localStorage.removeItem('bharat_active_user');
-    } catch {}
+      await api.logout();
+    } catch (e) {
+      console.warn('Logout notification:', e);
+    }
+    setCurrentUser(null);
     setShowLoginModal(true);
     setIsNewUserOnboarding(false);
     setActiveTab('dashboard');
@@ -150,9 +163,6 @@ export default function App() {
 
   const handleLoginSuccess = (user: User, isNewUser = false) => {
     setCurrentUser(user);
-    try {
-      localStorage.setItem('bharat_active_user', JSON.stringify(user));
-    } catch {}
     setShowLoginModal(false);
     setActiveTab('dashboard');
     if (isNewUser) {
@@ -167,6 +177,15 @@ export default function App() {
     setTradeModalType(type);
     setIsTradeModalOpen(true);
   };
+
+  if (isAuthChecking) {
+    return (
+      <div className="min-h-screen bg-slate-900 flex flex-col items-center justify-center text-white">
+        <div className="w-10 h-10 border-4 border-amber-500 border-t-transparent rounded-full animate-spin mb-4"></div>
+        <p className="text-slate-300 font-semibold text-sm">Verifying Secure Server Session...</p>
+      </div>
+    );
+  }
 
   if (!currentUser || showLoginModal) {
     return <LoginView onLoginSuccess={handleLoginSuccess} />;

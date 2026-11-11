@@ -21,7 +21,7 @@ public class RegisterServlet extends BaseServlet {
     private static final long serialVersionUID = 1L;
 
     @Override
-    protected void doPost(HttpServletRequest request, HttpServletResponse response)
+    public void doPost(HttpServletRequest request, HttpServletResponse response)
             throws ServletException, IOException {
 
         Map<String, String> body = parseJsonBody(request);
@@ -51,21 +51,11 @@ public class RegisterServlet extends BaseServlet {
             userId = email.split("@")[0].replaceAll("[^a-zA-Z0-9]", "").toLowerCase();
         }
 
-        UserRole role = "ADMIN".equalsIgnoreCase(roleStr) ? UserRole.ADMIN : UserRole.TRADER;
-        double balance = 50000.0;
-        try {
-            if (body.containsKey("initialBalance")) {
-                balance = Double.parseDouble(body.get("initialBalance"));
-            }
-        } catch (NumberFormatException ignored) {}
-
-        User newUser;
-        if (role == UserRole.ADMIN) {
-            String dept = body.getOrDefault("department", "Risk Operations");
-            newUser = new Admin(userId, name, email, password, dept);
-        } else {
-            newUser = new Trader(userId, name, email, password, balance);
-        }
+        // Strict Security: Public registration must ALWAYS create a TRADER account.
+        // Never accept ADMIN role, client-supplied balances, or account permissions from public registration requests.
+        // Admin account creation is strictly reserved for authenticated administrators via UserManagementServlet (/api/admin/users).
+        double defaultInitialBalance = 50000.0;
+        User newUser = new Trader(userId.trim(), name.trim(), email.trim(), password, defaultInitialBalance);
 
         try {
             userService.createUser(newUser);

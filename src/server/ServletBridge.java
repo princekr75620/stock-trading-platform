@@ -48,16 +48,27 @@ public class ServletBridge {
     }
 
     public HttpServlet getServlet(String path) {
-        if (servletMap.containsKey(path)) {
-            return servletMap.get(path);
+        if (path == null || path.isEmpty()) {
+            return null;
         }
-        // Match prefix patterns if exact match not found
-        for (Map.Entry<String, HttpServlet> entry : servletMap.entrySet()) {
-            if (path.startsWith(entry.getKey())) {
-                return entry.getValue();
+        String normalized = path.length() > 1 && path.endsWith("/")
+                ? path.substring(0, path.length() - 1)
+                : path;
+
+        HttpServlet exact = servletMap.get(normalized);
+        if (exact != null) {
+            return exact;
+        }
+
+        String bestMatch = null;
+        for (String key : servletMap.keySet()) {
+            if (normalized.startsWith(key + "/")) {
+                if (bestMatch == null || key.length() > bestMatch.length()) {
+                    bestMatch = key;
+                }
             }
         }
-        return null;
+        return bestMatch != null ? servletMap.get(bestMatch) : null;
     }
 
     public void dispatch(HttpExchange exchange, HttpServlet servlet) throws IOException {

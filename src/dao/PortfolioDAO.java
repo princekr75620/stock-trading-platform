@@ -35,12 +35,37 @@ public class PortfolioDAO implements PortfolioDAOInterface {
     }
 
     @Override
+    public Map<String, Portfolio> findAll() throws SQLException {
+        Map<String, Portfolio> result = new HashMap<>();
+        String sql = "SELECT user_id, symbol, quantity, average_price FROM portfolio WHERE quantity > 0 ORDER BY user_id ASC";
+        try (Connection conn = DBConnection.getConnection();
+             PreparedStatement ps = conn.prepareStatement(sql);
+             ResultSet rs = ps.executeQuery()) {
+            while (rs.next()) {
+                String userId = rs.getString("user_id");
+                String symbol = rs.getString("symbol");
+                int qty = rs.getInt("quantity");
+                double avgPrice = rs.getDouble("average_price");
+                Portfolio p = result.computeIfAbsent(userId, Portfolio::new);
+                p.recordBuy(symbol, qty, avgPrice);
+            }
+        }
+        return result;
+    }
+
+    @Override
     public Map<String, Integer> getHoldings(String userId) throws SQLException {
+        try (Connection conn = DBConnection.getConnection()) {
+            return getHoldings(conn, userId);
+        }
+    }
+
+    @Override
+    public Map<String, Integer> getHoldings(Connection conn, String userId) throws SQLException {
         Map<String, Integer> map = new HashMap<>();
         String sql = "SELECT symbol, quantity FROM portfolio WHERE user_id = ? AND quantity > 0";
 
-        try (Connection conn = DBConnection.getConnection();
-             PreparedStatement ps = conn.prepareStatement(sql)) {
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setString(1, userId);
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {

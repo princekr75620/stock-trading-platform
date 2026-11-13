@@ -20,6 +20,7 @@ public interface IUserService {
     List<User> searchUsers(String query);
     void updateUserDetails(String userId, String name, String email, String password) throws UserNotFoundException, InvalidInputException;
     void updateUser(User user);
+    boolean migrateLegacyPassword(String userId, String expectedLegacyValue, String newBcryptHash);
     void updateUserRole(String userId, UserRole newRole) throws UserNotFoundException;
     void deleteUser(String userId) throws UserNotFoundException;
     int getUserCount();

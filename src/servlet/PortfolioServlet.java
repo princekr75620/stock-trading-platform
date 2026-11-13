@@ -25,29 +25,25 @@ public class PortfolioServlet extends BaseServlet {
             throws ServletException, IOException {
 
         User user = getAuthenticatedUser(request);
-        String requestedId = request.getParameter("traderId");
-
-        String targetTraderId;
-        if (user != null) {
-            if (requestedId != null && !requestedId.trim().isEmpty()) {
-                // If requesting a specific portfolio, verify caller is owner or admin
-                if (user.getRole() != UserRole.ADMIN && !user.getUserId().equalsIgnoreCase(requestedId.trim())) {
-                    sendJsonResponse(response, HttpServletResponse.SC_FORBIDDEN,
-                            "{\"success\":false,\"error\":\"Access denied: Cannot access another user's portfolio.\"}");
-                    return;
-                }
-                targetTraderId = requestedId.trim();
-            } else {
-                targetTraderId = user.getUserId();
-            }
-        } else if (requestedId != null && !requestedId.trim().isEmpty()) {
-            // Unauthenticated request attempting to view portfolio
+        if (user == null) {
             sendJsonResponse(response, HttpServletResponse.SC_UNAUTHORIZED,
                     "{\"success\":false,\"error\":\"Authentication required. Please log in to view portfolio.\"}");
             return;
-        } else {
-            sendJsonResponse(response, HttpServletResponse.SC_UNAUTHORIZED,
-                    "{\"success\":false,\"error\":\"Authentication required. Please log in.\"}");
+        }
+
+        String requestedId = request.getParameter("traderId");
+        if (requestedId == null || requestedId.trim().isEmpty()) {
+            String path = request.getRequestURI();
+            if (path != null && path.startsWith("/api/portfolio/") && path.length() > "/api/portfolio/".length()) {
+                requestedId = path.substring("/api/portfolio/".length());
+            }
+        }
+
+        String targetTraderId = (requestedId != null && !requestedId.trim().isEmpty())
+                ? requestedId.trim()
+                : user.getUserId();
+
+        if (!ensureOwnerOrAdmin(request, response, targetTraderId)) {
             return;
         }
 

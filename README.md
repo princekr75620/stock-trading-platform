@@ -24,13 +24,16 @@
 The **Java Web-Based Indian Stock Trading Platform** (*Bharat Equities Exchange*) is an authentic simulation of an electronic securities broker-dealer trading platform engineered for **National Stock Exchange (NSE)** and **Bombay Stock Exchange (BSE)** equities (featuring Reliance, TCS, HDFC Bank, Infosys, Tata Motors, ICICI Bank, and other prominent Indian listed companies).
 
 ### Technology Stack & Architecture
-- **authoritative Backend Core:** Java SE 17 / Java EE Servlets (`javax.servlet.http.HttpServlet`) running on port `8765`.
-- **Database Engine & Persistence:** Dual-engine relational architecture:
-  - **Embedded Engine:** SQLite 3.45 via JDBC (`org.sqlite.JDBC`) with `PRAGMA foreign_keys = ON;` (Zero setup, ACID compliant).
-  - **Production Relational Engine:** MySQL 8.x Connector/J (`com.mysql.cj.jdbc.Driver`) configured via `src/util/DBConnection.java` and `schema.sql`.
-- **Security & Cryptography:** Industry-standard Damien Miller jBCrypt (`$2a$12$` salt rounds) for one-way password hashing with timing-safe verification and automatic legacy migration.
+- **Authoritative Backend Core:** Java SE 17 HTTP Server (`com.sun.net.httpserver.HttpServer`) + `ServletBridge` + `AuthenticationFilter` hosting `javax.servlet.http.HttpServlet` controllers on `JAVA_PORT` (default `8765`). Also packaged with `src/main/webapp/WEB-INF/web.xml` for optional Servlet 4.0 WAR builds (`npm run build:war`).
+- **Database Engine & Authoritative Persistence:**
+  - **Active Default Engine:** Embedded **SQLite** (`data/stock_trading.db`) via JDBC (`org.sqlite.JDBC`) with `PRAGMA foreign_keys = ON;` (zero-setup, ACID compliant).
+  - **Optional Relational Engine:** **MySQL 8.x** Connector/J (`com.mysql.cj.jdbc.Driver`), enabled explicitly via `DB_TYPE=mysql` (`MYSQL_HOST`, `MYSQL_PORT`, `MYSQL_DATABASE`, `MYSQL_USER`, `MYSQL_PASSWORD`) and initialized via `schema.sql`. No silent fallback occurs when `DB_TYPE=mysql` is configured and unreachable.
+- **Persistent Financial Tables vs. Transient Runtime Caches:**
+  - **Authoritative JDBC Tables:** `users`, `stocks`, `portfolio`, `transactions`, and `watchlist` are read and mutated exclusively via JDBC DAOs (`UserDAO`, `StockDAO`, `PortfolioDAO`, `TransactionDAO`, `WatchlistDAO`).
+  - **Transient Runtime State (Non-Financial Ledger):** Intraday market news headlines (`MarketUpdateService`), background ticker scheduling (`TradingPlatformHttpServer`), and runtime notification/security-policy feeds operate in memory while spot price ticks flush back to `StockDAO`.
+- **Security & Cryptography:** Damien Miller jBCrypt (`$2a$12$` salt rounds) via `PasswordHasher`. Normal verification strictly rejects unflagged plaintext passwords; only records explicitly tagged with the `$LEGACY$` prefix can complete a one-time migration and conditional BCrypt upgrade.
 - **Frontend Presentation Layer:** React 19 + TypeScript Single Page Application (SPA), styled with Tailwind CSS, supporting interactive Indian market trading desks, watchlist management, and portfolio performance analytics.
-- **API Gateway & Dev Reverse Proxy:** Node.js Express server (`server.ts`) running on port `3000` acting as a gateway and transparent reverse proxy that forwards `/api/*` requests to the Java EE HTTP server while preserving session cookies (`JSESSIONID`).
+- **API Gateway & Reverse Proxy:** Node.js Express server (`server.ts`, port `3000`) compiles the Java backend (`compile.sh`), starts and waits for live Java `/api/health` readiness before accepting traffic, forwards `/api/*` requests with `JSESSIONID` cookies, and returns HTTP `503` (`status: "DOWN"`) if Java is unavailable.
 
 ---
 
@@ -38,9 +41,9 @@ The **Java Web-Based Indian Stock Trading Platform** (*Bharat Equities Exchange*
 
 | Evaluation Criteria | Maximum Marks | Implementation Details & Proof Points in Codebase |
 |---|:---:|---|
-| **Code Quality & Testing** | **10 Marks** | • 5-tier modular separation: Model, DAO, Service, Servlet, Util.<br>• 77/77 passing automated Java unit & integration tests (`test.AllTestsRunner`).<br>• BCrypt password hashing & automatic plaintext migration (`src/util/PasswordHasher.java`).<br>• Session fixation defense & strict RBAC filter (`src/filter/AuthenticationFilter.java`).<br>• Server-side session verification via `/api/auth/session` & public admin escalation prevention.<br>• Parameterized queries (`PreparedStatement`) eliminating SQL injection.<br>• Atomic ACID transactions with `conn.setAutoCommit(false)`, `commit()`, and `rollback()`. |
-| **Teamwork & Collaboration** | **5 Marks** | • Standardized Git feature-branching workflow (`feature/*`, `bugfix/*`).<br>• Pull Request template and code review checklist.<br>• Documented team role placeholders (Backend Lead, Database Architect, Frontend Lead, QA Engineer).<br>• Clean, self-contained build scripts (`compile.sh`, `run.sh`, `pom.xml`, `package.json`).<br>• Zero-configuration onboarding for new teammates and evaluators. |
-| **Innovation / Extra Effort** | **2 Marks** | • **Interactive Stock Watchlist**: Database-persisted multi-user watchlist with star toggle and filtered views.<br>• **Live JDBC Database Health Modal**: Real-time diagnostic inspector displaying active database engine, JDBC driver, connection status, table record counts, and schema verification.<br>• **Fee Breakdown Order Ticket**: Instant calculation of SEBI turnover fees, stamp duty, exchange turnover charges, and brokerage.<br>• **Dual Database Fallback**: Embedded SQLite out-of-the-box fallback with seamless MySQL compatibility. |
+| **Code Quality & Testing** | **10 Marks** | • Modular separation: Model, DAO, Service, Servlet, Filter, Util, Server.<br>• **110/110** passing automated Java unit, DB, & HTTP E2E integration tests (`test.AllTestsRunner`).<br>• BCrypt password hashing (`$2a$12$`) with isolated `$LEGACY$`-only conditional migration (`src/util/PasswordHasher.java`).<br>• Session fixation defense, strict RBAC & cross-tenant ownership checks (`src/filter/AuthenticationFilter.java` + servlets).<br>• Server-side session verification via `/api/auth/session` & public admin escalation prevention.<br>• Parameterized queries (`PreparedStatement`) eliminating SQL injection.<br>• Atomic ACID transactions with `conn.setAutoCommit(false)`, `commit()`, and `rollback()`. |
+| **Teamwork & Collaboration** | **5 Marks** | • Standardized Git feature-branching workflow (`feature/*`, `bugfix/*`).<br>• Pull Request template and code review checklist.<br>• Documented team role placeholders (Backend Lead, Database Architect, Frontend Lead, QA Engineer).<br>• Clean, self-contained build scripts (`compile.sh`, `run.sh`, `pom.xml`, `package.json`).<br>• Zero-configuration SQLite onboarding for new teammates and evaluators. |
+| **Innovation / Extra Effort** | **2 Marks** | • **Interactive Stock Watchlist**: Database-persisted multi-user watchlist with star toggle and filtered views.<br>• **Live JDBC Database Health Modal**: Real-time diagnostic inspector displaying active database engine (SQLite or MySQL), JDBC driver, connection status, table record counts, and schema verification.<br>• **Fee Breakdown Order Ticket**: Instant calculation of SEBI turnover fees, exchange turnover charges, and brokerage.<br>• **Dual JDBC Driver Support**: Embedded SQLite default (`data/stock_trading.db`) with explicit `DB_TYPE=mysql` switchability. |
 
 ---
 
@@ -49,21 +52,20 @@ The **Java Web-Based Indian Stock Trading Platform** (*Bharat Equities Exchange*
 The project strictly adheres to the **Model-View-Controller (MVC)** and **Data Access Object (DAO)** enterprise architectural patterns.
 
 ```
-├── .env.example                          # Environment configuration template
-├── WEB-INF/
-│   └── web.xml                           # Servlet 4.0 Deployment Descriptor mapping all Servlets & Filters
+├── .env.example                          # Environment configuration template (PORT, JAVA_PORT, DB_TYPE, MYSQL_*)
 ├── compile.sh                            # Script to compile Java source into ./out with exit code check
 ├── run.sh                                # Script to execute standalone Java CLI trading desk
 ├── pom.xml                               # Maven project descriptor (Servlet API, SQLite JDBC, MySQL, jBCrypt)
-├── schema.sql                            # Production DDL/DML relational schema with 3NF normalization
+├── schema.sql                            # MySQL DDL/DML relational schema with 3NF normalization & BCrypt seeds
 ├── metadata.json                         # Project metadata and permissions
-├── package.json                          # Frontend dependencies and dev scripts
-├── server.ts                             # Express reverse proxy and web gateway (Port 3000)
-├── lib/                                  # Java dependencies (sqlite-jdbc, jbcrypt, javax.servlet)
+├── package.json                          # Frontend dependencies, npm build/dev/test scripts
+├── server.ts                             # Express reverse proxy and fail-fast gateway (Port 3000 -> Java 8765)
+├── lib/                                  # Java dependencies (sqlite-jdbc, jbcrypt, javax.servlet, mysql-connector)
 ├── data/                                 # Persistent SQLite database (`stock_trading.db`) and CSV datasets
-│   ├── stock_trading.db                  # Live relational SQLite database file
+│   ├── stock_trading.db                  # Live relational SQLite database file (default engine)
 │   └── indian_stocks_master.csv          # Catalog of NSE & BSE listed equities
 └── src/
+    ├── main/webapp/WEB-INF/web.xml       # Canonical Servlet 4.0 Deployment Descriptor for WAR packaging
     ├── model/                            # Model Layer (Domain Entities & OOP Principles)
     │   ├── User.java                     # User base entity (userId, name, email, role, balance)
     │   ├── Trader.java                   # Subclass of User with watchlist & portfolio references
@@ -76,7 +78,7 @@ The project strictly adheres to the **Model-View-Controller (MVC)** and **Data A
     │   └── UserRole.java                 # Enum: TRADER, ADMIN
     ├── dao/                              # Data Access Object Layer (JDBC & Parameterized SQL)
     │   ├── UserDAOInterface.java         # User DAO contract
-    │   ├── UserDAO.java                  # JDBC implementation for users table & balance updates
+    │   ├── UserDAO.java                  # JDBC implementation for users table & conditional legacy password upgrade
     │   ├── StockDAOInterface.java        # Stock DAO contract
     │   ├── StockDAO.java                 # JDBC implementation for stocks catalog
     │   ├── PortfolioDAOInterface.java    # Portfolio DAO contract
@@ -89,42 +91,51 @@ The project strictly adheres to the **Model-View-Controller (MVC)** and **Data A
     │   ├── ITradingService.java          # Trading service interface
     │   ├── TradingService.java           # Order execution engine with ACID transaction rollback
     │   ├── IPortfolioService.java        # Portfolio calculation contract
-    │   ├── PortfolioService.java         # Portfolio valuation, net worth, and unrealized P&L
+    │   ├── PortfolioService.java         # Portfolio valuation, net worth, and unrealized P&L via JDBC DAOs
+    │   ├── IUserService.java             # User persistence contract
+    │   ├── UserService.java              # Authoritative JDBC user CRUD & balance persistence
     │   ├── IAuthenticationService.java   # Authentication contract
-    │   └── AuthenticationService.java    # Login, BCrypt hashing, migration, and lockout
+    │   ├── AuthenticationService.java    # Login, BCrypt verification, isolated $LEGACY$ migration, and lockout
+    │   └── MarketUpdateService.java      # Stock catalog persistence (StockDAO) + transient news ticker cache
     ├── servlet/                          # Controller Layer (HTTP Servlets)
-    │   ├── BaseServlet.java              # Common servlet with session validation and JSON serialization
+    │   ├── BaseServlet.java              # Common servlet with session validation, RBAC helpers & JSON serialization
     │   ├── LoginServlet.java             # POST /api/auth/login
-    │   ├── RegisterServlet.java          # POST /api/auth/register
+    │   ├── RegisterServlet.java          # POST /api/auth/register (enforces TRADER role + ₹50,000 balance)
     │   ├── LogoutServlet.java            # POST /api/auth/logout
-    │   ├── StockServlet.java             # GET /api/stocks
-    │   ├── BuyStockServlet.java          # POST /api/trades/buy (Atomic trade execution)
-    │   ├── SellStockServlet.java         # POST /api/trades/sell (Atomic trade execution)
-    │   ├── PortfolioServlet.java         # GET /api/portfolio (Cross-tenant isolated)
-    │   ├── TransactionServlet.java       # GET /api/trades & /api/transactions
-    │   ├── WatchlistServlet.java         # GET & POST /api/watchlist (Innovation feature)
+    │   ├── AuthSessionServlet.java       # GET  /api/auth/session (refreshes authoritative user state from DB)
+    │   ├── DashboardServlet.java         # GET  /api/dashboard (owner or admin isolated)
+    │   ├── StockServlet.java             # GET  /api/stocks
+    │   ├── BuyStockServlet.java          # POST /api/trades/buy (Atomic JDBC trade execution)
+    │   ├── SellStockServlet.java         # POST /api/trades/sell (Atomic JDBC trade execution)
+    │   ├── PortfolioServlet.java         # GET  /api/portfolio (Cross-tenant isolated)
+    │   ├── TransactionServlet.java       # GET  /api/trades & /api/transactions (Cross-tenant isolated)
+    │   ├── WatchlistServlet.java         # GET & POST /api/watchlist (Authenticated & owner-isolated)
+    │   ├── NotificationServlet.java      # GET /api/notifications & POST /api/notifications/read
+    │   ├── MarketUpdateServlet.java      # GET /api/market/updates
+    │   ├── MarketTickServlet.java        # POST /api/market/tick
+    │   ├── TraderPreferenceServlet.java  # POST /api/trader/deposit & /api/trader/preferences
     │   ├── DatabaseHealthServlet.java    # GET /api/db/health (Live diagnostics endpoint)
-    │   ├── DashboardServlet.java         # GET /api/dashboard
     │   ├── AdminDashboardServlet.java    # GET /api/admin/dashboard (RBAC protected)
-    │   ├── UserManagementServlet.java    # CRUD /api/admin/users
-    │   ├── AddStockServlet.java          # POST /api/admin/stocks/add
-    │   ├── UpdateStockServlet.java       # POST /api/admin/stocks/update
-    │   └── DeleteStockServlet.java       # POST /api/admin/stocks/delete
+    │   ├── UserManagementServlet.java    # CRUD /api/admin/users (RBAC protected)
+    │   ├── AddStockServlet.java          # POST /api/admin/stocks/add (RBAC protected)
+    │   ├── UpdateStockServlet.java       # POST /api/admin/stocks/update (RBAC protected)
+    │   └── DeleteStockServlet.java       # POST /api/admin/stocks/delete (RBAC protected)
     ├── filter/                           # Security Filter Layer
-    │   └── AuthenticationFilter.java     # javax.servlet.Filter enforcing RBAC & session isolation
+    │   └── AuthenticationFilter.java     # javax.servlet.Filter enforcing RBAC, session auth & cross-tenant isolation
     ├── util/                             # Utilities & Database Connections
-    │   ├── DBConnection.java             # Dual JDBC Connection Manager (SQLite & MySQL)
-    │   ├── PasswordHasher.java           # Damien Miller BCrypt salt & verification wrapper
+    │   ├── DBConnection.java             # JDBC Connection Manager (SQLite default / explicit DB_TYPE=mysql)
+    │   ├── PasswordHasher.java           # Damien Miller BCrypt salt & isolated $LEGACY$ helper
     │   ├── BCrypt.java                   # Timing-safe BCrypt implementation
     │   └── JsonHelper.java               # Safe JSON parser and serializer
-    ├── server/                           # Java EE HTTP Server Engine
-    │   ├── TradingPlatformHttpServer.java# Standalone HTTP Server hosting all 18 servlets (Port 8765)
-    │   └── ServletBridge.java            # HTTP Request/Response adapter for servlets
-    ├── test/                             # Automated Test Suites (71 Tests Total)
+    ├── server/                           # Embedded Java HTTP Server Engine
+    │   ├── TradingPlatformHttpServer.java# Standalone HTTP Server hosting all Servlets (Port 8765)
+    │   └── ServletBridge.java            # HTTP Request/Response adapter with segment-boundary path matching
+    ├── test/                             # Automated Test Suites (110 Tests Total)
     │   ├── TradingServiceTest.java       # Order validation and business rules (6 tests)
     │   ├── PortfolioCalculationTest.java # Weighted average price & P&L formulas (4 tests)
-    │   ├── SecurityAndAuthTest.java      # BCrypt, session, lockout, RBAC, isolation (28 tests)
+    │   ├── SecurityAndAuthTest.java      # BCrypt, $LEGACY$ vs plaintext rejection, lockout, RBAC (36 tests)
     │   ├── DatabaseAndIntegrationTest.java# 8 Review 2 Criteria: Connection, CRUD, TX Rollback (33 tests)
+    │   ├── EndToEndHttpIntegrationTest.java # Live HttpServer + ServletBridge + SQLite persistence across restarts (31 tests)
     │   └── AllTestsRunner.java           # Unified CLI Test Suite Runner
     └── components/                       # Frontend Presentation Layer (React 19 / TypeScript)
         ├── Navbar.tsx                    # Header with market ticker, DB Status & Rubric buttons
@@ -153,109 +164,92 @@ The database design adheres to **Third Normal Form (3NF)** with strict referenti
  +--------------------+              +--------------------+
  |       USERS        |              |       STOCKS       |
  +--------------------+              +--------------------+
- | PK  user_id (VCHAR)|              | PK  symbol (VCHAR) |
+ | PK  id (INTEGER)   |              | PK  id (INTEGER)   |
+ | UQ  user_id (VCHAR)|              | UQ  symbol (VCHAR) |
  |     name (VARCHAR) |              |     company_name   |
- |     email (UNIQUE) |              |     exchange (NSE) |
- |     password_hash  |<---\         |     current_price  |<---\
- |     role (ENUM)    |    |         |     previous_price |    |
- |     cash_balance   |    |         |     available_qty  |    |
- |     created_at     |    |         |     status (ACTIVE)|    |
- +--------------------+    |         +--------------------+    |
-           | 1             |                   | 1             |
-           |               |                   |               |
-           | N             | N                 | N             | N
- +--------------------+    |         +--------------------+    |
- |     PORTFOLIO      |    |         |    TRANSACTIONS    |    |
- +--------------------+    |         +--------------------+    |
- | PK  holding_id     |    |         | PK  transaction_id |    |
- | FK  user_id --------+    |         | FK  user_id -------+    |
- | FK  stock_symbol --+    |         | FK  stock_symbol --+----+
- |     quantity       |    |         |     trade_type     |
- |     avg_buy_price  |    |         |     quantity       |
- |     updated_at     |    |         |     price          |
- +--------------------+    |         |     total_amount   |
-                           |         |     transaction_dt |
-                           |         +--------------------+
-                           |                   |
-                           |                   | N
-                           |         +--------------------+
-                           |         |     WATCHLIST      |
-                           |         +--------------------+
-                           |         | PK  watchlist_id   |
-                           \---------| FK  user_id        |
-                                     | FK  stock_symbol --/
-                                     |     added_at       |
-                                     +--------------------+
+ | UQ  email (VCHAR)  |              |     exchange (NSE) |
+ |     password (hash)|              |     price          |
+ |     role (ENUM)    |              |     previous_price |
+ |     balance        |              |     available_qty  |
+ |     created_at     |              |     status (ACTIVE)|
+ +--------------------+              +--------------------+
+           | 1                                 ^
+           | (FK user_id)                      |
+           +-------------------+---------------+
+           |                   |               |
+           v N                 v N             v N
+ +--------------------+  +--------------------+  +--------------------+
+ |     PORTFOLIO      |  |    TRANSACTIONS    |  |     WATCHLIST      |
+ +--------------------+  +--------------------+  +--------------------+
+ | PK  id (INTEGER)   |  | PK  id (INTEGER)   |  | PK  id (INTEGER)   |
+ | FK  user_id        |  | FK  user_id        |  | FK  user_id        |
+ |     stock_id       |  |     stock_id       |  |     symbol         |
+ |     symbol         |  |     symbol         |  |     added_at       |
+ |     quantity       |  |     transaction_type| +--------------------+
+ |     average_price  |  |     quantity       |
+ +--------------------+  |     price          |
+                         |     total_amount   |
+                         |     transaction_dt |
+                         +--------------------+
 ```
 
 ### Table Definitions & Constraints
 
 1. **`users`**:
-   - `user_id` `VARCHAR(50)` **PRIMARY KEY**: Unique identifier for traders and administrators.
+   - `id` `INTEGER` **PRIMARY KEY AUTOINCREMENT / AUTO_INCREMENT**.
+   - `user_id` `VARCHAR(50)` **UNIQUE NOT NULL**: Unique identifier for traders and administrators.
    - `name` `VARCHAR(100)` **NOT NULL**: Full legal name.
-   - `email` `VARCHAR(150)` **NOT NULL UNIQUE**: Verified email address.
-   - `password_hash` `VARCHAR(255)` **NOT NULL**: Stored BCrypt hash (`$2a$12$...`). Never plaintext.
-   - `role` `VARCHAR(20)` **NOT NULL CHECK (role IN ('TRADER', 'ADMIN'))**: Role-based access control.
-   - `cash_balance` `DOUBLE` **NOT NULL DEFAULT 100000.00 CHECK (cash_balance >= 0.0)**: INR trading margin.
+   - `email` `VARCHAR(100)` **UNIQUE NOT NULL**: Email address.
+   - `password` `VARCHAR(100)` **NOT NULL**: Stored BCrypt hash (`$2a$12$...`). Never plaintext.
+   - `role` `VARCHAR(20)` **NOT NULL**: `'TRADER'` or `'ADMIN'`.
+   - `balance` `DOUBLE` **DEFAULT 10000.00** (runtime registration sets `50000.00`).
+   - `department`, `email_alerts_enabled`, `alert_threshold_percent`, `created_at`.
 
 2. **`stocks`**:
-   - `symbol` `VARCHAR(20)` **PRIMARY KEY**: Ticker symbol (e.g. `RELIANCE`, `TCS`, `INFY`).
-   - `company_name` `VARCHAR(150)` **NOT NULL**: Legal enterprise name.
-   - `exchange` `VARCHAR(10)` **NOT NULL DEFAULT 'NSE'**: Listing exchange (`NSE` or `BSE`).
-   - `current_price` `DOUBLE` **NOT NULL CHECK (current_price > 0.0)**: Live market spot price.
-   - `previous_price` `DOUBLE` **NOT NULL**: Previous day closing price.
-   - `available_quantity` `INT` **NOT NULL CHECK (available_quantity >= 0)**: Tradable market float.
-   - `status` `VARCHAR(20)` **NOT NULL DEFAULT 'ACTIVE'**: Listing status (`ACTIVE`, `HALTED`).
+   - `id` `INTEGER` **PRIMARY KEY AUTOINCREMENT / AUTO_INCREMENT**.
+   - `symbol` `VARCHAR(10)` **UNIQUE NOT NULL**: Ticker symbol (e.g. `RELIANCE`, `TCS`, `INFY`).
+   - `company_name` `VARCHAR(100)` **NOT NULL**, `exchange` (`'NSE'` / `'BSE'`), `price` `DOUBLE`, `available_quantity` `INTEGER`, `status`, `previous_price`, `day_high`, `day_low`, `volume_traded`.
 
 3. **`portfolio`**:
-   - `holding_id` `INTEGER` **PRIMARY KEY AUTOINCREMENT / AUTO_INCREMENT**.
-   - `user_id` `VARCHAR(50)` **NOT NULL**, **FOREIGN KEY REFERENCES users(user_id) ON DELETE CASCADE**.
-   - `stock_symbol` `VARCHAR(20)` **NOT NULL**, **FOREIGN KEY REFERENCES stocks(symbol) ON DELETE CASCADE**.
-   - `quantity` `INT` **NOT NULL CHECK (quantity > 0)**: Owned share volume.
-   - `avg_buy_price` `DOUBLE` **NOT NULL CHECK (avg_buy_price > 0.0)**: Weighted average purchase price in INR.
-   - `UNIQUE(user_id, stock_symbol)`: Enforces exactly one holding row per stock per user.
+   - `id` `INTEGER` **PRIMARY KEY AUTOINCREMENT / AUTO_INCREMENT**.
+   - `user_id` `VARCHAR(50)` **NOT NULL**, **FOREIGN KEY (`user_id`) REFERENCES `users(user_id)`**.
+   - `stock_id`, `symbol` `VARCHAR(10)`, `quantity` `INTEGER`, `average_price` `DOUBLE`.
 
 4. **`transactions`**:
-   - `transaction_id` `VARCHAR(50)` **PRIMARY KEY**: Unique audit transaction identifier.
-   - `user_id` `VARCHAR(50)` **NOT NULL**, **FOREIGN KEY REFERENCES users(user_id)**.
-   - `stock_symbol` `VARCHAR(20)` **NOT NULL**, **FOREIGN KEY REFERENCES stocks(symbol)**.
-   - `trade_type` `VARCHAR(10)` **NOT NULL CHECK (trade_type IN ('BUY', 'SELL'))**.
-   - `quantity` `INT` **NOT NULL CHECK (quantity > 0)**: Number of executed shares.
-   - `price` `DOUBLE` **NOT NULL CHECK (price > 0.0)**: Execution price per share.
-   - `total_amount` `DOUBLE` **NOT NULL CHECK (total_amount > 0.0)**: Total transaction value in INR.
-   - `transaction_time` `TIMESTAMP` **DEFAULT CURRENT_TIMESTAMP**: Immutable execution audit timestamp.
+   - `id` `INTEGER` **PRIMARY KEY AUTOINCREMENT / AUTO_INCREMENT**.
+   - `user_id` `VARCHAR(50)` **NOT NULL**, **FOREIGN KEY (`user_id`) REFERENCES `users(user_id)`**.
+   - `stock_id`, `symbol` `VARCHAR(10)`, `transaction_type` (`'BUY'` / `'SELL'`), `quantity` `INTEGER`, `price` `DOUBLE`, `total_amount` `DOUBLE`, `transaction_date` `TIMESTAMP`.
 
 5. **`watchlist`**:
-   - `watchlist_id` `INTEGER` **PRIMARY KEY AUTOINCREMENT / AUTO_INCREMENT**.
-   - `user_id` `VARCHAR(50)` **NOT NULL**, **FOREIGN KEY REFERENCES users(user_id) ON DELETE CASCADE**.
-   - `stock_symbol` `VARCHAR(20)` **NOT NULL**, **FOREIGN KEY REFERENCES stocks(symbol) ON DELETE CASCADE**.
-   - `added_at` `TIMESTAMP` **DEFAULT CURRENT_TIMESTAMP**.
-   - `UNIQUE(user_id, stock_symbol)`: Prevents duplicate watchlist entries.
+   - `id` `INTEGER` **PRIMARY KEY AUTOINCREMENT / AUTO_INCREMENT**.
+   - `user_id` `VARCHAR(50)` **NOT NULL**, **FOREIGN KEY (`user_id`) REFERENCES `users(user_id)`**.
+   - `symbol` `VARCHAR(10)`, `added_at` `TIMESTAMP`, **`UNIQUE(user_id, symbol)`**.
 
 ---
 
 ## 5. Database Connectivity (JDBC) & Transaction Management
 
 ### Reusable Connection Manager (`DBConnection.java`)
-Connectivity is encapsulated within `src/util/DBConnection.java`. It supports dynamic environment resolution without hardcoding credentials:
+Connectivity is encapsulated within `src/util/DBConnection.java`. By default, the application uses embedded SQLite (`data/stock_trading.db`) with foreign keys enabled (`PRAGMA foreign_keys = ON;`). When `DB_TYPE=mysql` is configured, it connects to MySQL using environment variables:
 ```java
-String dbHost = System.getenv().getOrDefault("DB_HOST", "localhost");
-String dbPort = System.getenv().getOrDefault("DB_PORT", "3306");
-String dbName = System.getenv().getOrDefault("DB_NAME", "stock_trading_db");
-String dbUser = System.getenv().getOrDefault("DB_USER", "root");
-String dbPass = System.getenv().getOrDefault("DB_PASS", "");
+String requestedDb = System.getenv("DB_TYPE"); // default: sqlite; set "mysql" for MySQL
+String mysqlHost = System.getenv("MYSQL_HOST") != null ? System.getenv("MYSQL_HOST") : "localhost";
+String mysqlPort = System.getenv("MYSQL_PORT") != null ? System.getenv("MYSQL_PORT") : "3306";
+String mysqlDb   = System.getenv("MYSQL_DATABASE") != null ? System.getenv("MYSQL_DATABASE") : "stock_trading";
+String mysqlUser = System.getenv("MYSQL_USER") != null ? System.getenv("MYSQL_USER") : "root";
+String mysqlPass = System.getenv("MYSQL_PASSWORD") != null ? System.getenv("MYSQL_PASSWORD") : "root";
 ```
-If MySQL is not reachable, the system automatically and safely falls back to local SQLite (`data/stock_trading.db`) with full relational constraints (`PRAGMA foreign_keys = ON`), ensuring the application and tests run seamlessly in any review or CI environment without crashing.
+When `DB_TYPE=mysql` is requested and unreachable, `DBConnection` throws an explicit `SQLException` instead of silently masking a misconfigured database.
 
 ### Parameterized SQL Queries (`PreparedStatement`)
 To completely eliminate SQL Injection vulnerabilities, all DAO queries utilize parameterized statements:
 ```java
-String sql = "INSERT INTO transactions (transaction_id, user_id, stock_symbol, trade_type, quantity, price, total_amount) VALUES (?, ?, ?, ?, ?, ?, ?)";
+String sql = "INSERT INTO transactions (user_id, stock_id, symbol, transaction_type, quantity, price, total_amount) VALUES (?, ?, ?, ?, ?, ?, ?)";
 try (PreparedStatement stmt = conn.prepareStatement(sql)) {
-    stmt.setString(1, tx.getTransactionId());
-    stmt.setString(2, tx.getUserId());
-    stmt.setString(3, tx.getStockSymbol());
-    stmt.setString(4, tx.getTradeType().name());
+    stmt.setString(1, tx.getUserId());
+    stmt.setInt(2, tx.getStockId());
+    stmt.setString(3, tx.getSymbol());
+    stmt.setString(4, tx.getTransactionType());
     stmt.setInt(5, tx.getQuantity());
     stmt.setDouble(6, tx.getPrice());
     stmt.setDouble(7, tx.getTotalAmount());
@@ -473,8 +467,8 @@ DatabaseAndIntegrationTest Results: 33/33 Passed.
   - `feature/db-health-diagnostics`: Live JDBC status endpoint and modal.
   - `feature/bcrypt-security-hardening`: jBCrypt migration and session filter.
 - **Pull Request Checklist**:
-  1. Does `compile.sh` compile cleanly with zero errors?
-  2. Do all 71 tests in `test.AllTestsRunner` pass?
+  1. Does `compile.sh` / `npm run build` compile cleanly with zero errors?
+  2. Do all 110 tests in `test.AllTestsRunner` pass?
   3. Are all database queries parameterized via `PreparedStatement`?
   4. Are passwords hashed with BCrypt and credentials loaded from environment variables?
   5. Does the frontend build without TypeScript errors (`npm run lint`)?
@@ -489,15 +483,11 @@ DatabaseAndIntegrationTest Results: 33/33 Passed.
    - Offers an instant view toggle between "All Equities" and "Watchlist Only" with live badge count.
 2. **Live JDBC Database Health Inspector (`DatabaseStatusModal.tsx`)**:
    - Accessible via the **"🗄️ DB Status"** button in the header.
-   - Live query to `/api/db/health` inspects JDBC driver metadata, active database product name, connection status, ACID compliance mode, and live record counts across all 5 relational tables.
+   - Live query to `/api/db/health` inspects JDBC driver metadata, active database product name (`SQLite` default or `MySQL` when configured), connection status, ACID compliance mode, and live record counts across all 5 relational tables.
 3. **Real-Time Regulatory Brokerage & Fee Calculation Slip**:
-   - Order execution ticket in `TradeModal.tsx` calculates real Indian brokerage fees:
-     - Brokerage: 0.15%
-     - SEBI Turnover Fee: 0.0001%
-     - Exchange Turnover Fee: 0.00345%
-     - Total Cash Required vs Available Margin.
-4. **Dual Database Engine Fallback**:
-   - Zero-configuration startup with embedded SQLite while retaining 100% compatibility with production MySQL 8.x via JDBC connection abstraction.
+   - Order execution ticket in `TradeModal.tsx` calculates Indian brokerage fees, SEBI turnover fees, and exchange turnover charges against available margin.
+4. **Dual JDBC Engine Support**:
+   - Zero-configuration startup with embedded SQLite (`data/stock_trading.db`) while supporting MySQL 8.x when `DB_TYPE=mysql` is set.
 
 ---
 
@@ -506,37 +496,45 @@ DatabaseAndIntegrationTest Results: 33/33 Passed.
 ### Prerequisites
 - **Java SE Development Kit (JDK) 17+** (`javac`, `java`)
 - **Node.js 18+** and **npm**
-- **Maven 3.8+** (Optional, for building via `mvn`)
+- **Maven 3.8+** (Optional, for building WAR artifacts via `mvn`)
 
-### 1. Build and Compile Backend
+### 1. Build and Compile Backend + Production Bundle
 ```bash
-# Compile all 90+ Java classes into ./out
-./compile.sh
+# Compile all Java classes into ./out
+bash compile.sh
 
-# Or compile using Apache Maven
-mvn compile
+# Full build: Java compile -> Vite SPA bundle -> Express gateway bundle (dist/server.cjs)
+npm run build
+
+# Optional Servlet 4.0 WAR package using src/main/webapp/WEB-INF/web.xml
+npm run build:war
 ```
 
-### 2. Run Java Unit & Integration Test Suites (71 Tests)
+### 2. Run Java Unit, DB & HTTP E2E Test Suites (110 Tests)
 ```bash
 # Execute the comprehensive test runner
-java -cp "out:lib/*" test.AllTestsRunner
+npm test
+# or directly:
+java -cp "lib/*:out" test.AllTestsRunner
 ```
 
 ### 3. Start the Application
 ```bash
-# Start the full-stack web application (Java EE + Express Dev Gateway)
+# Development mode (compiles Java, starts Java port 8765, waits for /api/health UP, serves Vite + API on port 3000)
 npm run dev
+
+# Production mode (after npm run build)
+npm start
 ```
 Open **`http://localhost:3000`** in any modern web browser.
 
-### 4. Default Login Credentials
+### 4. Default Seeded Login Credentials (`DBConnection.seedInitialData()`)
 
-| Role | Username / ID | Password | Starting Margin | Notes |
+| Role | Username / ID | Password | Starting Cash Balance | Notes |
 |---|---|---|---|---|
-| **Trader 1** | `trader1` | `trader123` | ₹1,00,000.00 | Default active trader with portfolio & watchlist |
-| **Trader 2** | `trader2` | `trader123` | ₹75,000.00 | Secondary trader for multi-tenant isolation tests |
-| **Admin** | `admin` | `admin123` | N/A | Executive governance, user CRUD & system reports |
+| **Trader 1** | `trader1` | `trader123` | ₹50,000.00 | Default active trader with seeded portfolio & watchlist |
+| **Trader 2** | `trader2` | `trader123` | ₹75,000.00 (initial seed) | Secondary trader for cross-tenant isolation tests |
+| **Admin** | `admin` | `admin123` | N/A | Executive governance, user CRUD & stock catalog admin |
 
 ---
 
@@ -545,14 +543,14 @@ Open **`http://localhost:3000`** in any modern web browser.
 When presenting to the faculty panel during Review 2, structure your walkthrough using this 5-minute outline:
 
 1. **Project Vision & Architecture (1 min)**:
-   - "Good morning Professors. Today we present our Java Web-Based Indian Stock Trading Platform. We built a 5-tier architecture strictly separating Model, DAO, Service, Servlet, and Presentation layers."
+   - Express API Gateway (port 3000) -> Java 17 HttpServer + `ServletBridge` + `AuthenticationFilter` (port 8765) -> JDBC DAOs -> SQLite (`data/stock_trading.db`, or MySQL via `DB_TYPE=mysql`).
 2. **Database Schema & 3NF Design (1 min)**:
-   - "Our database schema is in Third Normal Form (3NF) across 5 core relational tables: `users`, `stocks`, `portfolio`, `transactions`, and `watchlist`. We enforce primary and foreign key constraints, cascading deletes, and unique indices."
+   - 5 core relational tables: `users`, `stocks`, `portfolio`, `transactions`, and `watchlist` with foreign key constraints and parameterized `PreparedStatement` queries.
 3. **JDBC Connectivity & ACID Transactions (1 min)**:
-   - "We connect using standard JDBC with 100% parameterized `PreparedStatement` queries. In `TradingService.java`, order execution uses atomic transactions with `conn.setAutoCommit(false)`, committing only if user balance, stock inventory, and portfolio updates succeed, or rolling back on any fault."
+   - In `TradingService.java`, order execution uses atomic transactions with `conn.setAutoCommit(false)`, committing only if user balance, stock inventory, portfolio holdings, and transaction ledger updates succeed, or rolling back on any fault.
 4. **Live Demonstration (1.5 mins)**:
-   - Show the **"🗄️ DB Status"** modal showing live JDBC connection and table counts.
-   - Execute a live BUY order on `RELIANCE` shares and show the updated portfolio balance and transaction audit log.
-   - Demonstrate the **Watchlist star toggle** and view filtering.
+   - Open **"🗄️ DB Status"** to show live JDBC connection metadata (`SQLite`) and table counts.
+   - Execute a live BUY/SELL order and verify updated balance, portfolio holdings, and transaction audit log survive server restarts.
+   - Demonstrate the **Watchlist star toggle** and cross-tenant/RBAC protections.
 5. **Code Quality, Security & Test Evidence (30 secs)**:
-   - "We achieved 100% test coverage with **71 automated unit and integration tests** passing across our 4 test suites. We hardened security with Damien Miller jBCrypt password hashing, session fixation defense, and strict RBAC filters."
+   - Show all **110 automated tests** passing across 5 suites in `test.AllTestsRunner`, Damien Miller jBCrypt password hashing, isolated `$LEGACY$` conditional migration, session fixation defense, and `AuthenticationFilter` RBAC enforcement.

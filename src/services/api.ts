@@ -48,6 +48,18 @@ export const api = {
   },
 
   /**
+   * Public user registration creating a TRADER account via POST /api/auth/register.
+   */
+  async register(data: { userId?: string; name: string; email: string; password: string }): Promise<{ success: boolean; user: User }> {
+    const res = await fetch(`${API_BASE}/auth/register`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+    return handleResponse(res);
+  },
+
+  /**
    * Logs out the current user and clears server session if any.
    */
   async logout(): Promise<{ success: boolean }> {

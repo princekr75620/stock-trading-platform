@@ -30,18 +30,26 @@ public class DashboardServlet extends BaseServlet {
             return;
         }
 
-        String userId = user.getUserId();
         String requestedId = request.getParameter("traderId");
-        if (requestedId != null && !requestedId.trim().isEmpty()) {
-            if (!user.hasAdminPrivileges() && !user.getUserId().equalsIgnoreCase(requestedId.trim())) {
-                sendJsonResponse(response, HttpServletResponse.SC_FORBIDDEN,
-                        "{\"success\":false,\"error\":\"Access denied: Cannot access another user's dashboard.\"}");
-                return;
-            }
-            if (user.hasAdminPrivileges()) {
-                userId = requestedId.trim();
+        if (requestedId == null || requestedId.trim().isEmpty()) {
+            String path = request.getRequestURI();
+            if (path != null && path.startsWith("/api/dashboard/") && path.length() > "/api/dashboard/".length()) {
+                requestedId = path.substring("/api/dashboard/".length());
             }
         }
+
+        String userId = (requestedId != null && !requestedId.trim().isEmpty())
+                ? requestedId.trim()
+                : user.getUserId();
+
+        if (!ensureOwnerOrAdmin(request, response, userId)) {
+            return;
+        }
+
+        User targetUser = user;
+        try {
+            targetUser = userService.getUserById(userId);
+        } catch (Exception ignored) {}
 
         Portfolio portfolio = portfolioService.getOrCreatePortfolio(userId);
         List<Trade> userTrades = tradingService.getTradesForTrader(userId);
@@ -49,7 +57,8 @@ public class DashboardServlet extends BaseServlet {
 
         double portfolioVal = (portfolio != null) ? portfolio.getCurrentPortfolioValue(marketUpdateService.getStockMap()) : 0.0;
         double unrealizedPnL = (portfolio != null) ? portfolio.getUnrealizedProfitLoss(marketUpdateService.getStockMap()) : 0.0;
-        double cashBalance = (user != null) ? user.getBalance() : 0.0;
+        double cashBalance = (targetUser != null) ? targetUser.getBalance() : 0.0;
+        model.Trader trader = (targetUser instanceof model.Trader) ? (model.Trader) targetUser : null;
 
         StringBuilder sb = new StringBuilder();
         sb.append("{");
@@ -60,7 +69,7 @@ public class DashboardServlet extends BaseServlet {
         sb.append("\"totalNetWorth\":").append(cashBalance + portfolioVal).append(",");
         sb.append("\"tradeCount\":").append(userTrades.size()).append(",");
         sb.append("\"availableStocksCount\":").append(stocks.size()).append(",");
-        sb.append("\"portfolio\":").append(JsonHelper.portfolioToJson(portfolio, marketUpdateService.getStockMap())).append(",");
+        sb.append("\"portfolio\":").append(JsonHelper.portfolioToJson(portfolio, trader, marketUpdateService.getStockMap())).append(",");
         sb.append("\"recentTrades\":").append(JsonHelper.tradesToJson(userTrades.subList(0, Math.min(5, userTrades.size()))));
         sb.append("}");
 

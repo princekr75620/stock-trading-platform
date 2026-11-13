@@ -50,17 +50,19 @@ public class AuthenticationService implements IAuthenticationService {
             }
         }
 
-        // Look up user by userId or email
+        // Look up user directly from authoritative UserService (by userId or email)
+        String identifier = usernameOrEmail.trim();
         User foundUser = null;
-        for (User u : userService.getAllUsers()) {
-            if (u.getUserId().equalsIgnoreCase(usernameOrEmail.trim()) ||
-                u.getEmail().equalsIgnoreCase(usernameOrEmail.trim())) {
-                foundUser = u;
-                break;
-            }
+        try {
+            foundUser = userService.getUserById(identifier);
+        } catch (exception.UserNotFoundException ignored) {}
+        if (foundUser == null) {
+            try {
+                foundUser = userService.getUserByEmail(identifier);
+            } catch (exception.UserNotFoundException ignored) {}
         }
 
-        // Defensive: Always perform a simulated verify check to mitigate timing side-channels
+        // Defensive: Reject unknown user with generic message
         if (foundUser == null) {
             failedAttemptsMap.put(key, attempts + 1);
             if (securityService != null) {
@@ -76,8 +78,36 @@ public class AuthenticationService implements IAuthenticationService {
             throw new InvalidLoginException("Invalid username/email or password.");
         }
 
-        // Secure BCrypt password verification with timing-safe comparison
-        boolean passwordValid = PasswordHasher.verifyPassword(password, foundUser.getPassword());
+        String storedPassword = foundUser.getPassword();
+        boolean passwordValid = false;
+
+        if (PasswordHasher.isBCryptHash(storedPassword)) {
+            // Standard BCrypt verification (never falls back to plaintext)
+            passwordValid = PasswordHasher.verifyPassword(password, storedPassword);
+        } else if (PasswordHasher.isLegacyMarkedPassword(storedPassword)) {
+            // Isolated temporary legacy migration path ONLY for explicitly $LEGACY$-marked accounts
+            passwordValid = PasswordHasher.verifyLegacyPassword(password, storedPassword);
+            if (passwordValid) {
+                try {
+                    String bcryptHash = PasswordHasher.hashPassword(password);
+                    boolean migrated = userService.migrateLegacyPassword(foundUser.getUserId(), storedPassword, bcryptHash);
+                    if (migrated) {
+                        foundUser.setPassword(bcryptHash);
+                        System.out.println("[AuthenticationService] Migrated explicitly marked legacy account '" + foundUser.getUserId() + "' to BCrypt hash.");
+                    } else {
+                        // Concurrent login already migrated; reload latest record and verify with BCrypt
+                        foundUser = userService.getUserById(foundUser.getUserId());
+                        passwordValid = PasswordHasher.verifyPassword(password, foundUser.getPassword());
+                    }
+                } catch (Exception e) {
+                    System.err.println("[AuthenticationService] Legacy password migration failed: " + e.getMessage());
+                    passwordValid = false;
+                }
+            }
+        } else {
+            // Unflagged plaintext or invalid hash format is strictly rejected
+            passwordValid = false;
+        }
 
         if (!passwordValid) {
             failedAttemptsMap.put(key, attempts + 1);
@@ -92,18 +122,6 @@ public class AuthenticationService implements IAuthenticationService {
             }
             // Generic failure message to prevent account enumeration
             throw new InvalidLoginException("Invalid username/email or password.");
-        }
-
-        // Transparent Migration: If stored password was plaintext, re-hash with BCrypt now
-        if (PasswordHasher.needsRehash(foundUser.getPassword())) {
-            try {
-                String bcryptHash = PasswordHasher.hashPassword(password);
-                foundUser.setPassword(bcryptHash);
-                userService.updateUser(foundUser);
-                System.out.println("[AuthenticationService] Successfully upgraded user '" + foundUser.getUserId() + "' to BCrypt hash.");
-            } catch (Exception e) {
-                System.err.println("[AuthenticationService] Warning: Could not persist upgraded password hash: " + e.getMessage());
-            }
         }
 
         // Successful authentication

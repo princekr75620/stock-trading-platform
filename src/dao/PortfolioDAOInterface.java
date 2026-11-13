@@ -11,7 +11,9 @@ import java.util.Map;
  */
 public interface PortfolioDAOInterface {
     Portfolio findByUserId(String userId) throws SQLException;
+    Map<String, Portfolio> findAll() throws SQLException;
     Map<String, Integer> getHoldings(String userId) throws SQLException;
+    Map<String, Integer> getHoldings(Connection conn, String userId) throws SQLException;
     boolean recordBuy(Connection conn, String userId, int stockId, String symbol, int quantity, double price) throws SQLException;
     boolean recordSell(Connection conn, String userId, String symbol, int quantity) throws SQLException;
 }

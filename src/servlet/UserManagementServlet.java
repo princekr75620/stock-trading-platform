@@ -62,6 +62,29 @@ public class UserManagementServlet extends BaseServlet {
         }
     }
 
+    @Override
+    protected void doPut(HttpServletRequest request, HttpServletResponse response)
+            throws ServletException, IOException {
+        if (!ensureAdmin(request, response)) {
+            return;
+        }
+        Map<String, String> body = parseJsonBody(request);
+        handleUpdateUser(body, response);
+    }
+
+    @Override
+    protected void doDelete(HttpServletRequest request, HttpServletResponse response)
+            throws ServletException, IOException {
+        if (!ensureAdmin(request, response)) {
+            return;
+        }
+        Map<String, String> body = parseJsonBody(request);
+        if (!body.containsKey("userId") && request.getParameter("userId") != null) {
+            body.put("userId", request.getParameter("userId"));
+        }
+        handleDeleteUser(body, response);
+    }
+
     private void handleCreateUser(Map<String, String> body, HttpServletResponse response) throws IOException {
         String name = body.get("name");
         String email = body.get("email");

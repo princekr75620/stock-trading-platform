@@ -27,6 +27,8 @@ CREATE TABLE users (
     role VARCHAR(20) NOT NULL, -- 'TRADER' or 'ADMIN'
     balance DOUBLE DEFAULT 50000.00,
     department VARCHAR(100) DEFAULT NULL,
+    email_alerts_enabled BOOLEAN DEFAULT TRUE,
+    alert_threshold_percent DOUBLE DEFAULT 2.0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
@@ -60,6 +62,7 @@ CREATE TABLE portfolio (
     quantity INT NOT NULL,
     average_price DOUBLE NOT NULL,
     FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
+    UNIQUE KEY uq_portfolio_user_symbol (user_id, symbol),
     INDEX idx_user_symbol (user_id, symbol)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
@@ -97,13 +100,15 @@ CREATE TABLE watchlist (
 
 -- ==============================================================================
 -- INITIAL SEED DATA (Authentic Indian Market Equities - NSE / BSE)
+-- Note: DBConnection.seedInitialData() seeds users dynamically using
+-- PasswordHasher.hashPassword() (BCrypt $2a$12$). Never insert plaintext passwords.
 -- ==============================================================================
 
--- Seed Users (Admins and Traders)
+-- Seed Users (Admins and Traders with BCrypt $2a$12$ hashes: admin123 / trader123)
 INSERT INTO users (user_id, name, email, password, role, balance, department) VALUES
-('admin', 'Chief Risk Officer', 'admin@apex.com', 'admin123', 'ADMIN', 0.0, 'Enterprise Market Operations'),
-('trader1', 'Alex Morgan', 'alex@apex.com', 'trader123', 'TRADER', 46444.80, NULL),
-('trader2', 'Sarah Jenkins', 'sarah@apex.com', 'trader123', 'TRADER', 75000.00, NULL);
+('admin', 'Chief Risk Officer', 'admin@tradingplatform.internal', '$2a$12$7pxJbuVHljDPnxDXkjKn9ecECdeJIAnFJq97IYOCfTnbTriYsq8nS', 'ADMIN', 0.0, 'Enterprise Market Operations'),
+('trader1', 'Alexander Morgan', 'alex.morgan@quantcap.com', '$2a$12$86egunIjqDaU0ok3e6YvA.IfM/CWcmrP2awjWSuvwX6LqT290lvBK', 'TRADER', 45280.00, NULL),
+('trader2', 'Elena Rostova', 'elena.r@hedgealpha.io', '$2a$12$86egunIjqDaU0ok3e6YvA.IfM/CWcmrP2awjWSuvwX6LqT290lvBK', 'TRADER', 85600.00, NULL);
 
 -- Seed Indian Equities (NIFTY 50 / NSE / BSE)
 INSERT INTO stocks (symbol, company_name, exchange, price, available_quantity, status, previous_price, day_high, day_low, volume_traded) VALUES

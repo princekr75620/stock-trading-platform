@@ -92,9 +92,15 @@ public class DBConnection {
                 "  role VARCHAR(20) NOT NULL," +
                 "  balance DOUBLE DEFAULT 10000.00," +
                 "  department VARCHAR(100)," +
+                "  email_alerts_enabled INTEGER DEFAULT 1," +
+                "  alert_threshold_percent DOUBLE DEFAULT 2.0," +
                 "  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP" +
                 ");"
             );
+
+            // Safe schema migration for pre-existing database files
+            try { stmt.execute("ALTER TABLE users ADD COLUMN email_alerts_enabled INTEGER DEFAULT 1;"); } catch (SQLException ignored) {}
+            try { stmt.execute("ALTER TABLE users ADD COLUMN alert_threshold_percent DOUBLE DEFAULT 2.0;"); } catch (SQLException ignored) {}
 
             // 2. Stocks Table (Indian Market Equities - NSE / BSE)
             stmt.execute(

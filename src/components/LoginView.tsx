@@ -63,13 +63,11 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess }) => {
     const generatedUsername = regEmail.split('@')[0].replace(/[^a-zA-Z0-9]/g, '').toLowerCase() || `trader_${Date.now()}`;
 
     try {
-      const res = await api.createAdminUser({
+      const res = await api.register({
         name: regName.trim(),
         email: regEmail.trim(),
         password: regPassword,
-        role: 'TRADER',
         userId: generatedUsername,
-        initialBalance: 50000.0,
       });
 
       if (res.success && res.user) {

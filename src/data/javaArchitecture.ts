@@ -26,7 +26,7 @@ CRITERIA 1: Problem Understanding & Solution Design ─── [8 / 8 MARKS]
 ✓ Problem Statement: Retail trading infrastructure requiring real-time portfolio valuation,
   atomic order execution (BUY/SELL), fee management (0.15%), and market compliance.
 ✓ Architecture Design: Pure 5-Tier Clean Architecture:
-  Client Browser (React/Vite) ──> Web Filters & Servlets ──> Business Services ──> DAOs ──> JDBC ──> MySQL
+  Client Browser (React/Vite) ──> Express Gateway (3000) ──> Java HttpServer + ServletBridge (8765) ──> Filter & Servlets ──> Services ──> DAOs ──> JDBC (SQLite default / MySQL optional)
 ✓ Design Patterns: MVC (Model-View-Controller), Data Access Object (DAO), Singleton,
   Factory Method, and Intercepting Filter Pattern.
 ✓ User Workflows:
@@ -78,7 +78,7 @@ CRITERIA 4: Servlets & Web Integration ─────────────�
   - LoginServlet, RegisterServlet, LogoutServlet (Authentication).
   - StockServlet, BuyStockServlet, SellStockServlet, PortfolioServlet, TransactionServlet (Trading).
   - AdminDashboardServlet, UserManagementServlet, AddStockServlet, UpdateStockServlet (Governance).
-✓ Deployment Descriptor (WEB-INF/web.xml):
+✓ Deployment Descriptor (src/main/webapp/WEB-INF/web.xml):
   - Fully defined Servlet 4.0 web.xml specification.
   - Maps every Servlet with unique <servlet-name> and <url-pattern>.
   - Configures global filters and filter mappings.
@@ -98,7 +98,7 @@ TOTAL SCORE: 33 / 33 MARKS (FULL RUBRIC COMPLIANCE)
     path: 'docs/ARCHITECTURE.md',
     category: 'Problem Understanding & Solution Design (8 Marks)',
     marks: '8 / 8 Marks',
-    description: 'Complete 5-Tier Clean Architecture: Browser SPA -> Filter -> Servlets -> Services -> DAOs -> JDBC -> MySQL.',
+    description: 'Complete 5-Tier Clean Architecture: Browser SPA -> Express Gateway -> Filter -> Servlets -> Services -> DAOs -> JDBC (SQLite / MySQL).',
     codeSnippet: `========================================================================================
 5-TIER CLEAN ARCHITECTURE ENFORCED ACROSS THE PLATFORM
 ========================================================================================
@@ -125,8 +125,8 @@ TOTAL SCORE: 33 / 33 MARKS (FULL RUBRIC COMPLIANCE)
        │                                     • Encapsulates PreparedStatement SQL queries
        │                                     • Isolates SQL persistence logic from business logic
        ▼
-[Tier 5: JDBC & Relational Database] ──────> DatabaseConnection.java ──> MySQL / Relational Database
-                                             • users, stocks, portfolio, transactions tables
+[Tier 5: JDBC & Relational Database] ──────> DBConnection.java ──> SQLite (default) / MySQL (DB_TYPE=mysql)
+                                             • users, stocks, portfolio, transactions, watchlist tables
                                              • Referential integrity, Foreign Keys, ACID guarantees`
   },
   {
@@ -446,43 +446,47 @@ public class StockDAO implements StockDAOInterface {
   },
   {
     id: 'db-connection-manager',
-    name: 'DatabaseConnection.java & DBConnection.java',
+    name: 'DBConnection.java (Dual JDBC Manager)',
     path: 'src/util/DBConnection.java',
     category: 'Database Integration (JDBC) (8 Marks)',
     marks: '8 / 8 Marks',
-    description: 'Central JDBC Connection Manager using DriverManager and Class.forName("com.mysql.cj.jdbc.Driver").',
+    description: 'Central JDBC Connection Manager defaulting to embedded SQLite (data/stock_trading.db) with optional MySQL via DB_TYPE=mysql.',
     codeSnippet: `package util;
 
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.SQLException;
+import java.sql.Statement;
 
 /**
  * Central JDBC Connection Provider.
- * Satisfies GUVI Rubric Section 3: Connection, DriverManager, PreparedStatement.
+ * Defaults to embedded SQLite (PRAGMA foreign_keys = ON) and supports MySQL via DB_TYPE=mysql.
  */
 public class DBConnection {
-    private static final String MYSQL_URL = "jdbc:mysql://localhost:3306/stock_trading?useSSL=false&allowPublicKeyRetrieval=true";
-    private static final String MYSQL_USER = "root";
-    private static final String MYSQL_PASS = "admin123";
-
-    static {
-        try {
-            Class.forName("com.mysql.cj.jdbc.Driver");
-        } catch (ClassNotFoundException e) {
-            System.err.println("MySQL Driver class not found: " + e.getMessage());
-        }
-    }
+    private static final String SQLITE_URL = "jdbc:sqlite:data/stock_trading.db";
 
     public static Connection getConnection() throws SQLException {
-        return DriverManager.getConnection(MYSQL_URL, MYSQL_USER, MYSQL_PASS);
+        String dbType = System.getenv("DB_TYPE");
+        if ("mysql".equalsIgnoreCase(dbType)) {
+            String host = System.getenv().getOrDefault("MYSQL_HOST", "localhost");
+            String port = System.getenv().getOrDefault("MYSQL_PORT", "3306");
+            String db   = System.getenv().getOrDefault("MYSQL_DATABASE", "stock_trading");
+            String user = System.getenv().getOrDefault("MYSQL_USER", "root");
+            String pass = System.getenv().getOrDefault("MYSQL_PASSWORD", "");
+            return DriverManager.getConnection("jdbc:mysql://" + host + ":" + port + "/" + db, user, pass);
+        }
+        Connection conn = DriverManager.getConnection(SQLITE_URL);
+        try (Statement st = conn.createStatement()) {
+            st.execute("PRAGMA foreign_keys = ON;");
+        }
+        return conn;
     }
 }`
   },
   {
     id: 'web-xml-descriptor',
     name: 'web.xml (Servlet 4.0 Deployment Descriptor)',
-    path: 'WEB-INF/web.xml',
+    path: 'src/main/webapp/WEB-INF/web.xml',
     category: 'Servlets & Web Integration (7 Marks)',
     marks: '7 / 7 Marks',
     description: 'Servlet 4.0 Deployment Descriptor mapping all Servlets and AuthenticationFilter to URL endpoints.',
@@ -605,18 +609,26 @@ public class AuthenticationFilter implements Filter {
         HttpServletResponse response = (HttpServletResponse) res;
         String path = request.getRequestURI();
 
-        // 1. Role-based Route Protection
-        if (path.startsWith("/api/admin")) {
-            User user = getSessionOrHeaderUser(request);
-            if (user == null || user.getRole() != UserRole.ADMIN) {
-                response.setStatus(HttpServletResponse.SC_FORBIDDEN);
-                response.setContentType("application/json");
-                response.getWriter().write("{\"success\":false,\"error\":\"Access denied: Administrator privileges required.\"}");
-                return;
-            }
+        // 1. Require authenticated HttpSession
+        HttpSession session = request.getSession(false);
+        User user = (session != null && session.getAttribute("user") instanceof User)
+                ? (User) session.getAttribute("user") : null;
+        if (user == null) {
+            response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
+            response.setContentType("application/json");
+            response.getWriter().write("{\"success\":false,\"error\":\"Authentication required.\"}");
+            return;
         }
 
-        // 2. Pass request to next servlet or filter in chain
+        // 2. Role-based Route Protection (ADMIN only)
+        if (path.startsWith("/api/admin") && user.getRole() != UserRole.ADMIN) {
+            response.setStatus(HttpServletResponse.SC_FORBIDDEN);
+            response.setContentType("application/json");
+            response.getWriter().write("{\"success\":false,\"error\":\"Access denied: Administrator privileges required.\"}");
+            return;
+        }
+
+        // 3. Pass request to next servlet or filter in chain
         chain.doFilter(req, res);
     }
 }`

@@ -12,6 +12,7 @@ import java.util.Map;
  */
 public interface StockDAOInterface {
     Stock findBySymbol(String symbol) throws SQLException;
+    Stock findBySymbol(Connection conn, String symbol) throws SQLException;
     Stock findById(int id) throws SQLException;
     List<Stock> findAll() throws SQLException;
     Map<String, Stock> findAllAsMap() throws SQLException;

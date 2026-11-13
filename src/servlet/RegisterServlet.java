@@ -41,21 +41,39 @@ public class RegisterServlet extends BaseServlet {
         String userId = body.get("userId");
         if (userId == null) userId = request.getParameter("userId");
 
-        if (name == null || email == null || password == null) {
+        if (name == null || name.trim().isEmpty() ||
+            email == null || email.trim().isEmpty() ||
+            password == null || password.isEmpty()) {
             sendJsonResponse(response, HttpServletResponse.SC_BAD_REQUEST,
                     "{\"success\":false,\"error\":\"Name, email, and password are required.\"}");
             return;
         }
 
+        String trimmedEmail = email.trim();
+        if (!trimmedEmail.matches("^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}$")) {
+            sendJsonResponse(response, HttpServletResponse.SC_BAD_REQUEST,
+                    "{\"success\":false,\"error\":\"Please provide a valid email address.\"}");
+            return;
+        }
+
+        if (password.length() < 6) {
+            sendJsonResponse(response, HttpServletResponse.SC_BAD_REQUEST,
+                    "{\"success\":false,\"error\":\"Password must be at least 6 characters long.\"}");
+            return;
+        }
+
         if (userId == null || userId.trim().isEmpty()) {
-            userId = email.split("@")[0].replaceAll("[^a-zA-Z0-9]", "").toLowerCase();
+            userId = trimmedEmail.split("@")[0].replaceAll("[^a-zA-Z0-9_]", "").toLowerCase();
+            if (userId.isEmpty()) {
+                userId = "trader_" + (System.currentTimeMillis() % 100000);
+            }
         }
 
         // Strict Security: Public registration must ALWAYS create a TRADER account.
         // Never accept ADMIN role, client-supplied balances, or account permissions from public registration requests.
         // Admin account creation is strictly reserved for authenticated administrators via UserManagementServlet (/api/admin/users).
         double defaultInitialBalance = 50000.0;
-        User newUser = new Trader(userId.trim(), name.trim(), email.trim(), password, defaultInitialBalance);
+        User newUser = new Trader(userId.trim(), name.trim(), trimmedEmail, password, defaultInitialBalance);
 
         try {
             userService.createUser(newUser);

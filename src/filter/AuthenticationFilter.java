@@ -91,17 +91,15 @@ public class AuthenticationFilter implements Filter {
             }
         }
 
-        // 5. Portfolio Cross-Tenant Isolation (/api/portfolio)
-        // Traders can ONLY view their own portfolio; Admins can audit any portfolio.
-        if (path.startsWith("/api/portfolio")) {
-            String requestedTraderId = httpRequest.getParameter("traderId");
-            if (requestedTraderId != null && !requestedTraderId.trim().isEmpty()) {
-                if (sessionUser.getRole() != UserRole.ADMIN &&
-                    !sessionUser.getUserId().equalsIgnoreCase(requestedTraderId.trim())) {
-                    sendJsonError(httpResponse, HttpServletResponse.SC_FORBIDDEN,
-                            "Access denied: You are not authorized to view another user's portfolio.");
-                    return;
-                }
+        // 5. Cross-Tenant Resource Isolation (query params AND path suffixes)
+        // Traders can ONLY view/modify their own resources; Admins can audit any trader.
+        String requestedTargetId = extractTargetUserId(path, httpRequest);
+        if (requestedTargetId != null && !requestedTargetId.isEmpty()) {
+            if (sessionUser.getRole() != UserRole.ADMIN &&
+                !sessionUser.getUserId().equalsIgnoreCase(requestedTargetId)) {
+                sendJsonError(httpResponse, HttpServletResponse.SC_FORBIDDEN,
+                        "Access denied: You are not authorized to view another user's portfolio or account data.");
+                return;
             }
         }
 
@@ -109,19 +107,57 @@ public class AuthenticationFilter implements Filter {
         chain.doFilter(request, response);
     }
 
+    private String extractTargetUserId(String path, HttpServletRequest request) {
+        String traderIdParam = request.getParameter("traderId");
+        if (traderIdParam != null && !traderIdParam.trim().isEmpty()) {
+            return traderIdParam.trim();
+        }
+        String userIdParam = request.getParameter("userId");
+        if (userIdParam != null && !userIdParam.trim().isEmpty()) {
+            return userIdParam.trim();
+        }
+
+        String[] prefixes = {
+                "/api/portfolio/",
+                "/api/trades/",
+                "/api/transactions/",
+                "/api/dashboard/",
+                "/api/notifications/",
+                "/api/watchlist/"
+        };
+        for (String prefix : prefixes) {
+            if (path.startsWith(prefix) && path.length() > prefix.length()) {
+                String suffix = path.substring(prefix.length());
+                if ("/api/trades/".equals(prefix) && ("buy".equalsIgnoreCase(suffix) || "sell".equalsIgnoreCase(suffix))) {
+                    return null;
+                }
+                if ("/api/notifications/".equals(prefix) && "read".equalsIgnoreCase(suffix)) {
+                    return null;
+                }
+                int slashIdx = suffix.indexOf('/');
+                String candidate = (slashIdx >= 0 ? suffix.substring(0, slashIdx) : suffix).trim();
+                if (!candidate.isEmpty()) {
+                    return candidate;
+                }
+            }
+        }
+        return null;
+    }
+
     /**
      * Determines whether an endpoint is publicly accessible without prior authentication.
      */
     private boolean isPublicEndpoint(String path, String method) {
         if (path == null) return true;
+        boolean isGet = "GET".equalsIgnoreCase(method);
         return path.equals("/api/auth/login") ||
                path.equals("/api/auth/register") ||
                path.equals("/api/auth/session") ||
                path.equals("/api/auth/logout") ||
-               path.equals("/api/health") ||
-               path.equals("/api/db/health") ||
-               path.equals("/api/stocks") ||
-               path.equals("/api/market/updates") ||
+               (isGet && path.equals("/api/health")) ||
+               (isGet && path.equals("/api/db/health")) ||
+               (isGet && path.equals("/api/stocks")) ||
+               (isGet && path.equals("/api/market/updates")) ||
                path.startsWith("/dist") ||
                path.startsWith("/assets") ||
                path.endsWith(".html") ||

@@ -27,8 +27,25 @@ public class AuthSessionServlet extends BaseServlet {
             return;
         }
 
-        // Return authoritative user details from session
-        String json = String.format("{\"authenticated\":true,\"user\":%s}", JsonHelper.userToJson(sessionUser));
+        User freshUser = sessionUser;
+        if (userService != null) {
+            try {
+                freshUser = userService.getUserById(sessionUser.getUserId());
+                javax.servlet.http.HttpSession session = request.getSession(false);
+                if (session != null && freshUser != null) {
+                    session.setAttribute("user", freshUser);
+                    session.setAttribute("role", freshUser.getRole().name());
+                }
+            } catch (Exception e) {
+                clearAuthenticatedUser(request);
+                sendJsonResponse(response, HttpServletResponse.SC_UNAUTHORIZED,
+                        "{\"authenticated\":false,\"user\":null,\"message\":\"Session user no longer active.\"}");
+                return;
+            }
+        }
+
+        // Return authoritative user details from database
+        String json = String.format("{\"authenticated\":true,\"user\":%s}", JsonHelper.userToJson(freshUser));
         sendJsonResponse(response, HttpServletResponse.SC_OK, json);
     }
 }

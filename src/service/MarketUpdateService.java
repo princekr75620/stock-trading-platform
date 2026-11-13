@@ -1,9 +1,11 @@
 package service;
 
+import dao.StockDAO;
 import model.MarketUpdate;
 import model.Stock;
 import model.Trader;
 
+import java.sql.SQLException;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -13,16 +15,18 @@ import java.util.Map;
 import java.util.Random;
 
 /**
- * Service managing real-time stock quotes, simulated market updates,
- * news events, and trader preference filtering.
- * Designed with adapter hooks so an external REST API can be integrated seamlessly.
+ * Service managing live market quote updates, news feed cache, and authoritative Stock catalog persistence via StockDAO.
+ * Financial equity master records live in the JDBC 'stocks' table; only transient news headlines
+ * and quote simulation ticks are cached in memory and flushed back to StockDAO.
  */
 public class MarketUpdateService implements IMarketUpdateService {
-    private Map<String, Stock> stockMap;
-    private List<MarketUpdate> marketUpdates;
-    private INotificationService notificationService;
-    private Random random;
-    private final dao.StockDAO stockDAO = new dao.StockDAO();
+    private final boolean jdbcAuthoritative;
+    private final Map<String, Stock> isolatedTestStocks;
+    // In-memory transient market-ticker headline feed cache (non-financial audit stream)
+    private final List<MarketUpdate> marketUpdates;
+    private final INotificationService notificationService;
+    private final Random random;
+    private final StockDAO stockDAO = new StockDAO();
 
     private static final String[] MARKET_HEADLINES = {
             "Q3 net profit beats Dalal Street consensus estimates.",
@@ -38,37 +42,21 @@ public class MarketUpdateService implements IMarketUpdateService {
     };
 
     public MarketUpdateService(INotificationService notificationService) {
-        this.stockMap = new HashMap<>();
+        this.jdbcAuthoritative = true;
+        this.isolatedTestStocks = null;
         this.marketUpdates = new ArrayList<>();
         this.notificationService = notificationService;
         this.random = new Random();
-        loadStocksFromDatabaseOrSeed();
+        seedInitialUpdates();
     }
 
     public MarketUpdateService(Map<String, Stock> stockMap, List<MarketUpdate> marketUpdates, INotificationService notificationService) {
-        this.stockMap = (stockMap != null) ? new HashMap<>(stockMap) : new HashMap<>();
+        this.jdbcAuthoritative = false;
+        this.isolatedTestStocks = (stockMap != null) ? new HashMap<>(stockMap) : new HashMap<>();
         this.marketUpdates = (marketUpdates != null) ? new ArrayList<>(marketUpdates) : new ArrayList<>();
         this.notificationService = notificationService;
         this.random = new Random();
-        if (this.stockMap.isEmpty()) {
-            loadStocksFromDatabaseOrSeed();
-        }
-    }
-
-    private void loadStocksFromDatabaseOrSeed() {
-        try {
-            List<Stock> fromDb = stockDAO.findAll();
-            if (fromDb != null && !fromDb.isEmpty()) {
-                for (Stock s : fromDb) {
-                    stockMap.put(s.getSymbol(), s);
-                }
-                seedInitialUpdates();
-                return;
-            }
-        } catch (Exception e) {
-            System.err.println("[MarketUpdateService] DB stock load notification: " + e.getMessage());
-        }
-        seedDefaultStocks();
+        seedInitialUpdates();
     }
 
     private void seedInitialUpdates() {
@@ -88,83 +76,89 @@ public class MarketUpdateService implements IMarketUpdateService {
         }
     }
 
-    private void seedDefaultStocks() {
-        stockMap.put("RELIANCE", new Stock("RELIANCE", "Reliance Industries Limited", "NSE", 1324.40, 50000));
-        stockMap.put("TCS", new Stock("TCS", "Tata Consultancy Services Limited", "NSE", 2475.40, 35000));
-        stockMap.put("HDFCBANK", new Stock("HDFCBANK", "HDFC Bank Limited", "NSE", 798.15, 60000));
-        stockMap.put("INFY", new Stock("INFY", "Infosys Limited", "NSE", 1154.10, 45000));
-        stockMap.put("ICICIBANK", new Stock("ICICIBANK", "ICICI Bank Limited", "NSE", 1589.00, 55000));
-        stockMap.put("TATAMOTORS", new Stock("TATAMOTORS", "Tata Motors Limited", "NSE", 436.65, 40000));
-        stockMap.put("SBIN", new Stock("SBIN", "State Bank of India", "NSE", 1042.00, 75000));
-        stockMap.put("BHARTIARTL", new Stock("BHARTIARTL", "Bharti Airtel Limited", "NSE", 2072.10, 30000));
-        stockMap.put("ITC", new Stock("ITC", "ITC Limited", "NSE", 278.80, 80000));
-        stockMap.put("KOTAKBANK", new Stock("KOTAKBANK", "Kotak Mahindra Bank Limited", "NSE", 479.50, 25000));
-        stockMap.put("LT", new Stock("LT", "Larsen & Toubro Limited", "NSE", 4185.00, 20000));
-        stockMap.put("HINDUNILVR", new Stock("HINDUNILVR", "Hindustan Unilever Limited", "NSE", 1990.30, 30000));
-        stockMap.put("BAJFINANCE", new Stock("BAJFINANCE", "Bajaj Finance Limited", "NSE", 1064.85, 15000));
-        stockMap.put("MARUTI", new Stock("MARUTI", "Maruti Suzuki India Limited", "NSE", 12928.00, 8000));
-        stockMap.put("SUNPHARMA", new Stock("SUNPHARMA", "Sun Pharmaceutical Industries Ltd.", "NSE", 1904.50, 22000));
-        stockMap.put("WIPRO", new Stock("WIPRO", "Wipro Limited", "NSE", 199.00, 40000));
-        stockMap.put("TATASTEEL", new Stock("TATASTEEL", "Tata Steel Limited", "NSE", 184.85, 100000));
-        stockMap.put("VEDL", new Stock("VEDL", "Vedanta Limited", "BSE", 655.40, 50000));
-
-        seedInitialUpdates();
-    }
-
     @Override
     public synchronized void addStock(Stock stock) {
-        if (stock != null) {
-            String sym = stock.getSymbol().toUpperCase().trim();
-            stockMap.put(sym, stock);
-            try {
-                stockDAO.insert(stock);
-            } catch (Exception e) {
-                System.err.println("[MarketUpdateService] Note: stock persisted in memory, DB notice: " + e.getMessage());
+        if (stock == null) return;
+        String sym = stock.getSymbol().toUpperCase().trim();
+        stock.setSymbol(sym);
+        if (!jdbcAuthoritative) {
+            isolatedTestStocks.put(sym, stock);
+            return;
+        }
+        try {
+            if (!stockDAO.insert(stock)) {
+                throw new RuntimeException("Failed to insert stock into database: " + sym);
             }
+        } catch (SQLException e) {
+            throw new RuntimeException("Database error adding stock '" + sym + "': " + e.getMessage(), e);
         }
     }
 
     @Override
     public synchronized void updateStock(Stock stock) {
-        if (stock != null) {
-            String sym = stock.getSymbol().toUpperCase().trim();
-            stockMap.put(sym, stock);
-            try {
-                stockDAO.update(stock);
-            } catch (Exception e) {
-                System.err.println("[MarketUpdateService] Note: stock updated in memory, DB notice: " + e.getMessage());
+        if (stock == null) return;
+        String sym = stock.getSymbol().toUpperCase().trim();
+        stock.setSymbol(sym);
+        if (!jdbcAuthoritative) {
+            isolatedTestStocks.put(sym, stock);
+            return;
+        }
+        try {
+            if (!stockDAO.update(stock)) {
+                throw new RuntimeException("Failed to update stock in database: " + sym);
             }
+        } catch (SQLException e) {
+            throw new RuntimeException("Database error updating stock '" + sym + "': " + e.getMessage(), e);
         }
     }
 
     @Override
     public synchronized boolean deleteStock(String symbol) {
-        if (symbol == null) return false;
+        if (symbol == null || symbol.trim().isEmpty()) return false;
         String sym = symbol.toUpperCase().trim();
-        Stock removed = stockMap.remove(sym);
-        try {
-            stockDAO.delete(sym);
-        } catch (Exception e) {
-            System.err.println("[MarketUpdateService] Note: stock deleted in memory, DB notice: " + e.getMessage());
+        if (!jdbcAuthoritative) {
+            return isolatedTestStocks.remove(sym) != null;
         }
-        return removed != null;
+        try {
+            return stockDAO.delete(sym);
+        } catch (SQLException e) {
+            throw new RuntimeException("Database error deleting stock '" + sym + "': " + e.getMessage(), e);
+        }
     }
 
     @Override
     public Stock getStock(String symbol) {
-        if (symbol == null) return null;
-        return stockMap.get(symbol.toUpperCase().trim());
+        if (symbol == null || symbol.trim().isEmpty()) return null;
+        String sym = symbol.toUpperCase().trim();
+        if (!jdbcAuthoritative) {
+            return isolatedTestStocks.get(sym);
+        }
+        try {
+            return stockDAO.findBySymbol(sym);
+        } catch (SQLException e) {
+            throw new RuntimeException("Database error fetching stock '" + sym + "': " + e.getMessage(), e);
+        }
     }
 
     @Override
     public List<Stock> getAllStocks() {
-        return new ArrayList<>(stockMap.values());
+        if (!jdbcAuthoritative) {
+            return new ArrayList<>(isolatedTestStocks.values());
+        }
+        try {
+            return stockDAO.findAll();
+        } catch (SQLException e) {
+            throw new RuntimeException("Database error fetching stocks: " + e.getMessage(), e);
+        }
     }
 
     @Override
     public synchronized void recordMarketUpdate(MarketUpdate update) {
         if (update != null) {
-            marketUpdates.add(0, update); // Prepend
+            marketUpdates.add(0, update);
+            if (marketUpdates.size() > 100) {
+                marketUpdates.subList(100, marketUpdates.size()).clear();
+            }
         }
     }
 
@@ -177,7 +171,6 @@ public class MarketUpdateService implements IMarketUpdateService {
     public List<MarketUpdate> getMarketUpdatesForTrader(Trader trader) {
         if (trader == null) return getAllMarketUpdates();
 
-        // If trader has a watchlist or preference, filter accordingly
         List<MarketUpdate> filtered = new ArrayList<>();
         boolean hasWatchlist = trader.getWatchlist() != null && !trader.getWatchlist().isEmpty();
         double minThreshold = trader.getAlertThresholdPercent();
@@ -191,7 +184,6 @@ public class MarketUpdateService implements IMarketUpdateService {
             }
         }
 
-        // If filtering results in empty, return all so the user still sees information
         if (filtered.isEmpty()) {
             return getAllMarketUpdates();
         }
@@ -199,15 +191,14 @@ public class MarketUpdateService implements IMarketUpdateService {
     }
 
     /**
-     * Updates market prices using real-time Indian stock market feeds (NSE/BSE).
-     * Automatically triggers price alerts and logs a market update.
+     * Updates market prices using real-time Indian stock market feeds (NSE/BSE)
+     * with micro-tick fallback and persists updated spot quotes to StockDAO.
      */
     @Override
     public synchronized void simulateMarketTick() {
-        List<Stock> stocks = new ArrayList<>(stockMap.values());
+        List<Stock> stocks = getAllStocks();
         if (stocks.isEmpty()) return;
 
-        // Select stocks to refresh with real live quotes
         int countToUpdate = Math.min(stocks.size(), 2 + random.nextInt(3));
         Collections.shuffle(stocks);
 
@@ -216,7 +207,6 @@ public class MarketUpdateService implements IMarketUpdateService {
             double oldPrice = stock.getCurrentPrice();
             double newPrice = oldPrice;
 
-            // Attempt to fetch real live quote from NSE feed
             LiveMarketDataService.LiveQuote liveQuote = LiveMarketDataService.fetchLiveQuote(stock.getSymbol());
             if (liveQuote != null && liveQuote.price > 0) {
                 newPrice = liveQuote.price;
@@ -225,17 +215,12 @@ public class MarketUpdateService implements IMarketUpdateService {
                 if (liveQuote.dayLow > 0) stock.setDayLow(liveQuote.dayLow);
                 if (liveQuote.volume > 0) stock.setVolumeTraded(liveQuote.volume);
             } else {
-                // Micro-tick variation around real market price (±0.4%)
                 double deltaPercent = (random.nextDouble() * 0.8) - 0.4;
                 newPrice = Math.round(Math.max(1.0, oldPrice * (1.0 + (deltaPercent / 100.0))) * 100.0) / 100.0;
             }
 
             stock.updatePrice(newPrice);
-
-            // Persist updated real price into SQLite database
-            try {
-                stockDAO.update(stock);
-            } catch (Exception ignored) {}
+            updateStock(stock);
 
             String headline = MARKET_HEADLINES[random.nextInt(MARKET_HEADLINES.length)];
             MarketUpdate update = new MarketUpdate(
@@ -250,7 +235,6 @@ public class MarketUpdateService implements IMarketUpdateService {
             );
             recordMarketUpdate(update);
 
-            // Check alerts if notification service is present
             if (notificationService != null) {
                 notificationService.checkAlertsAgainstStock(stock);
             }
@@ -259,13 +243,21 @@ public class MarketUpdateService implements IMarketUpdateService {
 
     @Override
     public void setStocks(Map<String, Stock> stocks) {
-        if (stocks != null) {
-            this.stockMap = new HashMap<>(stocks);
+        if (!jdbcAuthoritative && stocks != null) {
+            isolatedTestStocks.clear();
+            isolatedTestStocks.putAll(stocks);
         }
     }
 
     @Override
     public Map<String, Stock> getStockMap() {
-        return stockMap;
+        if (!jdbcAuthoritative) {
+            return isolatedTestStocks;
+        }
+        try {
+            return stockDAO.findAllAsMap();
+        } catch (SQLException e) {
+            throw new RuntimeException("Database error building stock map: " + e.getMessage(), e);
+        }
     }
 }

@@ -1,71 +1,82 @@
 package service;
 
+import dao.PortfolioDAO;
 import model.Portfolio;
 import model.Stock;
 
+import java.sql.SQLException;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 
 /**
- * Service managing investment portfolios for all registered traders.
- * Demonstrates Map collection handling and financial calculations.
+ * Portfolio Management Service backed by authoritative JDBC persistence (PortfolioDAO).
+ * Ensures holdings and weighted average cost basis always reflect committed database records.
  */
 public class PortfolioService implements IPortfolioService {
-    // Map of Trader ID -> Portfolio
-    private Map<String, Portfolio> portfolioMap;
+    private final boolean jdbcAuthoritative;
+    private final Map<String, Portfolio> isolatedTestMap;
+    private final PortfolioDAO portfolioDAO = new PortfolioDAO();
 
     public PortfolioService() {
-        this.portfolioMap = new HashMap<>();
+        this.jdbcAuthoritative = true;
+        this.isolatedTestMap = null;
     }
 
     public PortfolioService(Map<String, Portfolio> initialPortfolios) {
-        this.portfolioMap = (initialPortfolios != null) ? new HashMap<>(initialPortfolios) : new HashMap<>();
+        this.jdbcAuthoritative = false;
+        this.isolatedTestMap = (initialPortfolios != null) ? new HashMap<>(initialPortfolios) : new HashMap<>();
     }
 
     @Override
-    public synchronized Portfolio getOrCreatePortfolio(String traderId) {
-        if (traderId == null) return null;
+    public Portfolio getOrCreatePortfolio(String traderId) {
+        if (traderId == null || traderId.trim().isEmpty()) return null;
         String tid = traderId.trim();
-        Portfolio p = portfolioMap.get(tid);
-        if (p == null || p.getHoldings().isEmpty()) {
-            try {
-                dao.PortfolioDAO pdao = new dao.PortfolioDAO();
-                Portfolio dbPortfolio = pdao.findByUserId(tid);
-                if (dbPortfolio != null && !dbPortfolio.getHoldings().isEmpty()) {
-                    portfolioMap.put(tid, dbPortfolio);
-                    return dbPortfolio;
-                }
-            } catch (Exception ignored) {}
-            if (p == null) {
-                p = new Portfolio(tid);
-                portfolioMap.put(tid, p);
-            }
+        if (!jdbcAuthoritative) {
+            return isolatedTestMap.computeIfAbsent(tid, Portfolio::new);
         }
-        return p;
+        try {
+            return portfolioDAO.findByUserId(tid);
+        } catch (SQLException e) {
+            throw new RuntimeException("Database error loading portfolio for '" + tid + "': " + e.getMessage(), e);
+        }
     }
 
     @Override
     public synchronized void updateOnBuy(String traderId, String symbol, int quantity, double price) {
-        Portfolio portfolio = getOrCreatePortfolio(traderId);
-        portfolio.recordBuy(symbol, quantity, price);
+        if (!jdbcAuthoritative) {
+            Portfolio portfolio = getOrCreatePortfolio(traderId);
+            portfolio.recordBuy(symbol, quantity, price);
+        }
+        // In JDBC mode, TradingService executes atomic PortfolioDAO.recordBuy within transaction.
     }
 
     @Override
     public synchronized double updateOnSell(String traderId, String symbol, int quantity, double price) {
-        Portfolio portfolio = getOrCreatePortfolio(traderId);
-        return portfolio.recordSell(symbol, quantity, price);
+        if (!jdbcAuthoritative) {
+            Portfolio portfolio = getOrCreatePortfolio(traderId);
+            return portfolio.recordSell(symbol, quantity, price);
+        }
+        // In JDBC mode, TradingService executes atomic PortfolioDAO.recordSell within transaction.
+        return 0.0;
     }
 
     @Override
     public Map<String, Portfolio> getAllPortfolios() {
-        return Collections.unmodifiableMap(portfolioMap);
+        if (!jdbcAuthoritative) {
+            return Collections.unmodifiableMap(isolatedTestMap);
+        }
+        try {
+            return Collections.unmodifiableMap(portfolioDAO.findAll());
+        } catch (SQLException e) {
+            throw new RuntimeException("Database error loading all portfolios: " + e.getMessage(), e);
+        }
     }
 
     @Override
     public double calculateTotalPlatformAUM(Map<String, Stock> marketStocks) {
         double totalAUM = 0.0;
-        for (Portfolio p : portfolioMap.values()) {
+        for (Portfolio p : getAllPortfolios().values()) {
             totalAUM += p.getCurrentPortfolioValue(marketStocks);
         }
         return Math.round(totalAUM * 100.0) / 100.0;

@@ -151,6 +151,10 @@ public class DatabaseAndIntegrationTest {
 
         } catch (Exception e) {
             assertTrue(false, "REG: Error in registration/login test: " + e.getMessage());
+        } finally {
+            try {
+                userDAO.delete(testUid);
+            } catch (SQLException ignored) {}
         }
     }
 
@@ -162,8 +166,8 @@ public class DatabaseAndIntegrationTest {
         UserDAO userDAO = new UserDAO();
         StockDAO stockDAO = new StockDAO();
         PortfolioDAO portfolioDAO = new PortfolioDAO();
-        TransactionDAO txDAO = new TransactionDAO();
         WatchlistDAO watchlistDAO = new WatchlistDAO();
+        String testSym = "CRUDSYM" + (System.currentTimeMillis() % 1000);
 
         try {
             // CRUD 1: Users (Update balance)
@@ -179,7 +183,6 @@ public class DatabaseAndIntegrationTest {
             }
 
             // CRUD 2: Stock (Create, Read, Update)
-            String testSym = "CRUDSYM" + (System.currentTimeMillis() % 1000);
             Stock testStock = new Stock(testSym, "Test Equities Corp", "NSE", 1500.0, 1000);
             stockDAO.insert(testStock);
             Stock fetchedStock = stockDAO.findBySymbol(testSym);
@@ -209,6 +212,10 @@ public class DatabaseAndIntegrationTest {
 
         } catch (SQLException e) {
             assertTrue(false, "CRUD: SQL exception during CRUD test: " + e.getMessage());
+        } finally {
+            try {
+                stockDAO.delete(testSym);
+            } catch (SQLException ignored) {}
         }
     }
 
@@ -298,10 +305,9 @@ public class DatabaseAndIntegrationTest {
     public static void testDatabaseTransactionRollbackOnFailure() {
         System.out.println(">>> 6. Testing Database Transaction Atomicity & Rollback...");
         UserDAO userDAO = new UserDAO();
-        StockDAO stockDAO = new StockDAO();
 
         String rollbackTraderId = "rb_trader_" + System.currentTimeMillis();
-        User testUser = new Trader(rollbackTraderId, "Rollback Tester", rollbackTraderId + "@trade.in", "pass", 20000.0);
+        User testUser = new Trader(rollbackTraderId, "Rollback Tester", rollbackTraderId + "@trade.in", PasswordHasher.hashPassword("RollPass123!"), 20000.0);
 
         try {
             userDAO.insert(testUser);
@@ -345,6 +351,10 @@ public class DatabaseAndIntegrationTest {
 
         } catch (SQLException e) {
             assertTrue(false, "TX: Exception during rollback test: " + e.getMessage());
+        } finally {
+            try {
+                userDAO.delete(rollbackTraderId);
+            } catch (SQLException ignored) {}
         }
     }
 

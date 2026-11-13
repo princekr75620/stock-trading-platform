@@ -61,9 +61,9 @@ public class TraderPreferenceServlet extends BaseServlet {
 
         try {
             double amt = Double.parseDouble(amtStr);
-            if (amt <= 0) {
+            if (!Double.isFinite(amt) || amt <= 0) {
                 sendJsonResponse(response, HttpServletResponse.SC_BAD_REQUEST,
-                        "{\"success\":false,\"error\":\"Deposit amount must be positive.\"}");
+                        "{\"success\":false,\"error\":\"Deposit amount must be a positive finite number.\"}");
                 return;
             }
 
@@ -72,6 +72,11 @@ public class TraderPreferenceServlet extends BaseServlet {
                 Trader t = (Trader) u;
                 t.deposit(amt);
                 userService.updateUser(t);
+                User sessionUser = getAuthenticatedUser(request);
+                if (sessionUser != null && sessionUser.getUserId().equalsIgnoreCase(t.getUserId())) {
+                    javax.servlet.http.HttpSession session = request.getSession(false);
+                    if (session != null) session.setAttribute("user", t);
+                }
                 sendJsonResponse(response, HttpServletResponse.SC_OK,
                         "{\"success\":true,\"cashBalance\":" + t.getCashBalance() +
                                 ",\"message\":\"Successfully deposited ₹" + String.format("%.2f", amt) + "\"}");
@@ -95,9 +100,20 @@ public class TraderPreferenceServlet extends BaseServlet {
                     t.setEmailAlertsEnabled("true".equalsIgnoreCase(p.get("emailAlertsEnabled")));
                 }
                 if (p.containsKey("alertThresholdPercent")) {
-                    t.setAlertThresholdPercent(Double.parseDouble(p.get("alertThresholdPercent")));
+                    double threshold = Double.parseDouble(p.get("alertThresholdPercent"));
+                    if (!Double.isFinite(threshold) || threshold < 0) {
+                        sendJsonResponse(response, HttpServletResponse.SC_BAD_REQUEST,
+                                "{\"success\":false,\"error\":\"Alert threshold must be a valid non-negative number.\"}");
+                        return;
+                    }
+                    t.setAlertThresholdPercent(threshold);
                 }
                 userService.updateUser(t);
+                User sessionUser = getAuthenticatedUser(request);
+                if (sessionUser != null && sessionUser.getUserId().equalsIgnoreCase(t.getUserId())) {
+                    javax.servlet.http.HttpSession session = request.getSession(false);
+                    if (session != null) session.setAttribute("user", t);
+                }
                 sendJsonResponse(response, HttpServletResponse.SC_OK,
                         "{\"success\":true,\"message\":\"Preferences updated successfully.\"}");
             } else {

@@ -81,20 +81,45 @@ public class SecurityAndAuthTest {
     }
 
     public static void testLegacyPasswordMigration() {
-        // Create user with legacy plaintext password
-        User legacyUser = new Trader("migratedTrader", "Migrated User", "migrate@trade.in", "legacyPlaintext123", 50000.0);
+        // 1. Unflagged plaintext stored in password column MUST be strictly rejected
+        String rawLegacyPass = "legacyPlaintext123";
+        assertTrue(!PasswordHasher.verifyPassword(rawLegacyPass, rawLegacyPass),
+                "testLegacyPasswordMigration - General verifyPassword rejects unflagged plaintext password");
+        assertTrue(!PasswordHasher.needsRehash(rawLegacyPass),
+                "testLegacyPasswordMigration - Unflagged plaintext is not eligible for auto-migration");
+
+        User unflaggedUser = new Trader("unflaggedUser", "Unflagged User", "unflagged@trade.in", rawLegacyPass, 50000.0);
+        Map<String, User> unflaggedMap = new HashMap<>();
+        unflaggedMap.put(unflaggedUser.getUserId(), unflaggedUser);
+        IUserService unflaggedService = new UserService(unflaggedMap);
+        AuthenticationService unflaggedAuth = new AuthenticationService(unflaggedService, null);
+
+        boolean unflaggedRejected = false;
+        try {
+            unflaggedAuth.login("unflaggedUser", rawLegacyPass);
+        } catch (InvalidLoginException e) {
+            unflaggedRejected = true;
+        }
+        assertTrue(unflaggedRejected, "testLegacyPasswordMigration - Normal login strictly rejects unflagged plaintext password");
+
+        // 2. Explicitly legacy-marked record ($LEGACY$ prefix) succeeds once and upgrades to BCrypt
+        String legacyMarked = PasswordHasher.markLegacyPassword(rawLegacyPass);
+        User legacyUser = new Trader("migratedTrader", "Migrated User", "migrate@trade.in", legacyMarked, 50000.0);
         Map<String, User> userMap = new HashMap<>();
         userMap.put(legacyUser.getUserId(), legacyUser);
         IUserService userService = new UserService(userMap);
         AuthenticationService authService = new AuthenticationService(userService, null);
 
-        assertTrue(PasswordHasher.needsRehash(legacyUser.getPassword()), "testLegacyPasswordMigration - Detects legacy plaintext requires rehash");
+        assertTrue(PasswordHasher.needsRehash(legacyUser.getPassword()),
+                "testLegacyPasswordMigration - Detects $LEGACY$ marker requires upgrade");
 
         try {
-            User authenticated = authService.login("migratedTrader", "legacyPlaintext123");
-            assertTrue(authenticated != null, "testLegacyPasswordMigration - Successfully logs in with legacy password");
-            assertTrue(PasswordHasher.isBCryptHash(authenticated.getPassword()), "testLegacyPasswordMigration - Transparently upgraded to BCrypt hash upon login");
-            assertTrue(PasswordHasher.verifyPassword("legacyPlaintext123", authenticated.getPassword()), "testLegacyPasswordMigration - Upgraded hash verifies accurately");
+            User authenticated = authService.login("migratedTrader", rawLegacyPass);
+            assertTrue(authenticated != null, "testLegacyPasswordMigration - Logs in with explicitly marked $LEGACY$ password");
+            assertTrue(PasswordHasher.isBCryptHash(authenticated.getPassword()),
+                    "testLegacyPasswordMigration - Conditionally upgraded $LEGACY$ record to BCrypt hash");
+            assertTrue(PasswordHasher.verifyPassword(rawLegacyPass, authenticated.getPassword()),
+                    "testLegacyPasswordMigration - Upgraded BCrypt hash verifies accurately");
         } catch (Exception e) {
             assertTrue(false, "testLegacyPasswordMigration - Exception during migration: " + e.getMessage());
         }

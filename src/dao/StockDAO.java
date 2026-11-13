@@ -23,9 +23,16 @@ public class StockDAO implements StockDAOInterface {
     @Override
     public Stock findBySymbol(String symbol) throws SQLException {
         if (symbol == null) return null;
+        try (Connection conn = DBConnection.getConnection()) {
+            return findBySymbol(conn, symbol);
+        }
+    }
+
+    @Override
+    public Stock findBySymbol(Connection conn, String symbol) throws SQLException {
+        if (symbol == null) return null;
         String sql = "SELECT " + SELECT_FIELDS + " FROM stocks WHERE symbol = ?";
-        try (Connection conn = DBConnection.getConnection();
-             PreparedStatement ps = conn.prepareStatement(sql)) {
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setString(1, symbol.toUpperCase().trim());
             try (ResultSet rs = ps.executeQuery()) {
                 if (rs.next()) {

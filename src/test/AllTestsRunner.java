@@ -14,9 +14,10 @@ public class AllTestsRunner {
         PortfolioCalculationTest.main(args);
         SecurityAndAuthTest.main(args);
         DatabaseAndIntegrationTest.main(args);
+        EndToEndHttpIntegrationTest.main(args);
 
         System.out.println("===============================================================");
-        System.out.println("   ALL JAVA UNIT TESTS COMPLETED SUCCESSFULLY!                ");
+        System.out.println("   ALL JAVA UNIT & E2E INTEGRATION TESTS PASSED!               ");
         System.out.println("===============================================================");
     }
 }

@@ -85,13 +85,22 @@ public class BuyStockServlet extends BaseServlet {
             model.Stock st = marketUpdateService.getStock(symbol.toUpperCase().trim());
             Trade trade = tx.toTrade(st != null ? st.getName() : symbol.toUpperCase().trim());
 
-            // Fetch updated portfolio
-            Portfolio portfolio = portfolioService.getOrCreatePortfolio(traderId.trim());
+            // Fetch updated trader & portfolio from database
+            String resolvedTraderId = traderId.trim();
+            Portfolio portfolio = portfolioService.getOrCreatePortfolio(resolvedTraderId);
+            User freshUser = userService.getUserById(resolvedTraderId);
+            model.Trader freshTrader = (freshUser instanceof model.Trader) ? (model.Trader) freshUser : null;
+            if (freshUser != null && sessionUser.getUserId().equalsIgnoreCase(freshUser.getUserId())) {
+                javax.servlet.http.HttpSession session = request.getSession(false);
+                if (session != null) {
+                    session.setAttribute("user", freshUser);
+                }
+            }
 
             String json = String.format("{\"success\":true,\"message\":\"Successfully purchased %d shares of %s.\",\"trade\":%s,\"portfolio\":%s}",
                     quantity, symbol.toUpperCase().trim(),
                     JsonHelper.tradeToJson(trade),
-                    JsonHelper.portfolioToJson(portfolio, marketUpdateService.getStockMap()));
+                    JsonHelper.portfolioToJson(portfolio, freshTrader, marketUpdateService.getStockMap()));
 
             sendJsonResponse(response, HttpServletResponse.SC_OK, json);
 

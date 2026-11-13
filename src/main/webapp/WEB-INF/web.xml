@@ -227,6 +227,25 @@
         <url-pattern>/api/db/health</url-pattern>
     </servlet-mapping>
 
+    <servlet>
+        <servlet-name>MarketUpdateServlet</servlet-name>
+        <servlet-class>servlet.MarketUpdateServlet</servlet-class>
+    </servlet>
+    <servlet-mapping>
+        <servlet-name>MarketUpdateServlet</servlet-name>
+        <url-pattern>/api/market/updates</url-pattern>
+    </servlet-mapping>
+
+    <servlet>
+        <servlet-name>NotificationServlet</servlet-name>
+        <servlet-class>servlet.NotificationServlet</servlet-class>
+    </servlet>
+    <servlet-mapping>
+        <servlet-name>NotificationServlet</servlet-name>
+        <url-pattern>/api/notifications</url-pattern>
+        <url-pattern>/api/notifications/*</url-pattern>
+    </servlet-mapping>
+
     <session-config>
         <session-timeout>30</session-timeout>
     </session-config>

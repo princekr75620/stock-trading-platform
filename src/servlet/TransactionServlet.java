@@ -30,10 +30,18 @@ public class TransactionServlet extends BaseServlet {
         }
 
         String traderId = request.getParameter("traderId");
+        if (traderId == null || traderId.trim().isEmpty()) {
+            String path = request.getRequestURI();
+            if (path != null && path.startsWith("/api/trades/") && path.length() > "/api/trades/".length()) {
+                traderId = path.substring("/api/trades/".length());
+            } else if (path != null && path.startsWith("/api/transactions/") && path.length() > "/api/transactions/".length()) {
+                traderId = path.substring("/api/transactions/".length());
+            }
+        }
+
         if (traderId != null && !traderId.trim().isEmpty()) {
-            if (!user.hasAdminPrivileges() && !user.getUserId().equalsIgnoreCase(traderId.trim())) {
-                sendJsonResponse(response, HttpServletResponse.SC_FORBIDDEN,
-                        "{\"success\":false,\"error\":\"Access denied: Cannot access another user's transaction history.\"}");
+            traderId = traderId.trim();
+            if (!ensureOwnerOrAdmin(request, response, traderId)) {
                 return;
             }
         } else if (!user.hasAdminPrivileges()) {

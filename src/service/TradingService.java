@@ -7,17 +7,15 @@ import util.DBConnection;
 
 import java.sql.Connection;
 import java.sql.SQLException;
-import java.time.LocalDateTime;
 import java.util.ArrayList;
-import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
 /**
- * Core trading engine executing equity BUY and SELL orders with ACID JDBC transactions.
- * Orchestrates UserDAO, StockDAO, PortfolioDAO, and TransactionDAO.
- * Implements TradingServiceInterface and ITradingService.
- * Fulfills Core Java (Inheritance, Polymorphism, Interfaces, Exceptions, Transactions) for GUVI Evaluation.
+ * Authoritative Core Trading Engine executing equity BUY and SELL orders with ACID JDBC transactions.
+ * Orchestrates UserDAO, StockDAO, PortfolioDAO, and TransactionDAO over a shared SQL Connection.
+ * All financial records and trade history queries read directly from relational database persistence.
  */
 public class TradingService implements ITradingService, TradingServiceInterface {
 
@@ -32,22 +30,10 @@ public class TradingService implements ITradingService, TradingServiceInterface 
     private final PortfolioDAO portfolioDAO;
     private final TransactionDAO transactionDAO;
 
-    // Cache of recent trades for fast display
-    private final List<Trade> tradeHistory;
-    private long tradeSequence;
-
     public TradingService(IMarketUpdateService marketUpdateService,
                           IPortfolioService portfolioService,
                           INotificationService notificationService,
                           IUserService userService) {
-        this(marketUpdateService, portfolioService, notificationService, userService, null);
-    }
-
-    public TradingService(IMarketUpdateService marketUpdateService,
-                          IPortfolioService portfolioService,
-                          INotificationService notificationService,
-                          IUserService userService,
-                          List<Trade> initialTrades) {
         this.marketUpdateService = marketUpdateService;
         this.portfolioService = portfolioService;
         this.notificationService = notificationService;
@@ -58,56 +44,31 @@ public class TradingService implements ITradingService, TradingServiceInterface 
         this.portfolioDAO = new PortfolioDAO();
         this.transactionDAO = new TransactionDAO();
 
-        this.tradeHistory = (initialTrades != null) ? new ArrayList<>(initialTrades) : new ArrayList<>();
-        this.tradeSequence = 1000 + this.tradeHistory.size();
-
-        // Ensure database initialized
+        // Ensure relational database schema exists
         DBConnection.initializeDatabase();
-
-        // Load historical transactions from DB into trade history if available
-        loadHistoricalTransactionsFromDB();
-    }
-
-    private void loadHistoricalTransactionsFromDB() {
-        try {
-            List<Transaction> dbList = transactionDAO.findAll();
-            if (dbList != null && !dbList.isEmpty()) {
-                java.util.Set<String> existingIds = new java.util.HashSet<>();
-                List<Trade> uniqueTrades = new ArrayList<>();
-                // Existing trades first (deduplicated)
-                for (Trade t : tradeHistory) {
-                    if (t != null && t.getTradeId() != null && existingIds.add(t.getTradeId())) {
-                        uniqueTrades.add(t);
-                    }
-                }
-                // Prepend or add DB transactions if not present
-                for (Transaction tx : dbList) {
-                    String txIdStr = String.valueOf(tx.getId());
-                    if (existingIds.add(txIdStr)) {
-                        Trade trade = tx.toTrade(tx.getSymbol());
-                        uniqueTrades.add(trade);
-                    }
-                }
-                tradeHistory.clear();
-                tradeHistory.addAll(uniqueTrades);
-            }
-        } catch (SQLException e) {
-            System.err.println("[TradingService] Could not preload DB transactions: " + e.getMessage());
-        }
     }
 
     /**
-     * Executes BUY order with atomic JDBC transaction management:
-     * connection.setAutoCommit(false) -> checks -> updates -> connection.commit()
-     * Rollback on any failure.
+     * Backward-compatible constructor; ignores legacy initialTrades so JDBC remains authoritative.
+     */
+    public TradingService(IMarketUpdateService marketUpdateService,
+                          IPortfolioService portfolioService,
+                          INotificationService notificationService,
+                          IUserService userService,
+                          List<Trade> ignoredInitialTrades) {
+        this(marketUpdateService, portfolioService, notificationService, userService);
+    }
+
+    /**
+     * Executes BUY order with atomic JDBC transaction management.
      */
     @Override
     public synchronized Trade executeBuy(String traderId, String symbol, int quantity)
             throws StockNotFoundException, InvalidInputException, InsufficientStockQuantityException {
         try {
             Transaction tx = executeBuyTransaction(traderId, symbol, quantity);
-            Stock stock = marketUpdateService.getStock(symbol.toUpperCase());
-            String stockName = stock != null ? stock.getName() : symbol.toUpperCase();
+            Stock stock = stockDAO.findBySymbol(tx.getSymbol());
+            String stockName = stock != null ? stock.getName() : tx.getSymbol();
             return tx.toTrade(stockName);
         } catch (InsufficientBalanceException e) {
             throw new InvalidInputException(e.getMessage());
@@ -123,21 +84,15 @@ public class TradingService implements ITradingService, TradingServiceInterface 
     }
 
     /**
-     * Core BUY transaction implementation fulfilling GUVI Rubric Section 8:
-     * 1. Validate input
-     * 2. Check stock availability
-     * 3. Check user balance
-     * 4. Calculate total amount
-     * 5. Deduct balance
-     * 6. Update portfolio
-     * 7. Update stock quantity
-     * 8. Insert transaction record
-     * 9. Commit database transaction (or Rollback on failure)
+     * Core BUY transaction with full ACID rollback on any failure.
      */
     public synchronized Transaction executeBuyTransaction(String traderId, String symbol, int quantity)
             throws InsufficientBalanceException, InsufficientStockException,
                    InvalidStockException, InvalidTransactionException, SQLException {
 
+        if (traderId == null || traderId.trim().isEmpty()) {
+            throw new InvalidTransactionException("Authenticated trader ID is required.");
+        }
         if (symbol == null || symbol.trim().isEmpty()) {
             throw new InvalidTransactionException("Stock symbol cannot be empty.");
         }
@@ -145,37 +100,35 @@ public class TradingService implements ITradingService, TradingServiceInterface 
             throw new InvalidTransactionException("Purchase quantity must be greater than zero.");
         }
 
+        String uid = traderId.trim();
         String sym = symbol.toUpperCase().trim();
         Connection conn = null;
 
         try {
             conn = DBConnection.getConnection();
-            conn.setAutoCommit(false); // BEGIN JDBC TRANSACTION
+            conn.setAutoCommit(false); // BEGIN ACID JDBC TRANSACTION
 
-            // Step 1: Check stock availability in DB
-            Stock stock = stockDAO.findBySymbol(sym);
-            if (stock == null) {
-                stock = marketUpdateService.getStock(sym);
-            }
+            // Step 1: Load authoritative stock quote & float from DB within transaction
+            Stock stock = stockDAO.findBySymbol(conn, sym);
             if (stock == null) {
                 throw new InvalidStockException("Stock symbol '" + sym + "' was not found on exchange.", sym);
             }
-
+            if (!"ACTIVE".equalsIgnoreCase(stock.getStatus())) {
+                throw new InvalidTransactionException("Trading is currently halted for " + sym + ".");
+            }
             if (stock.getAvailableQuantity() < quantity) {
                 throw new InsufficientStockException(sym, quantity, stock.getAvailableQuantity());
             }
 
-            // Step 2: Check user balance in DB
-            User user = userDAO.findById(traderId);
-            if (user == null && userService != null) {
-                try {
-                    user = userService.getUserById(traderId);
-                } catch (UserNotFoundException ignored) {}
+            // Step 2: Load authoritative user balance from DB within transaction
+            User user = userDAO.findById(conn, uid);
+            if (user == null) {
+                throw new InvalidTransactionException("Trader account not found in database: " + uid);
             }
 
             double currentPrice = stock.getCurrentPrice();
             double totalAmount = Math.round((currentPrice * quantity) * 100.0) / 100.0;
-            double currentBalance = (user != null) ? user.getBalance() : 0.0;
+            double currentBalance = user.getBalance();
 
             if (currentBalance < totalAmount) {
                 throw new InsufficientBalanceException(totalAmount, currentBalance);
@@ -183,27 +136,23 @@ public class TradingService implements ITradingService, TradingServiceInterface 
 
             // Step 3: Deduct balance in DB
             double newBalance = Math.round((currentBalance - totalAmount) * 100.0) / 100.0;
-            userDAO.updateBalance(conn, traderId, newBalance);
-            if (user != null) {
-                user.setBalance(newBalance);
-                if (user instanceof Trader) {
-                    ((Trader) user).setBalance(newBalance);
-                }
+            if (!userDAO.updateBalance(conn, user.getUserId(), newBalance)) {
+                throw new SQLException("Failed to update cash balance for trader: " + user.getUserId());
             }
 
-            // Step 4: Update stock available quantity in DB
-            stockDAO.updateQuantityAndVolume(conn, sym, quantity, true);
-            stock.reduceQuantity(quantity);
-
-            // Step 5: Update portfolio holdings in DB
-            portfolioDAO.recordBuy(conn, traderId, stock.getId(), sym, quantity, currentPrice);
-            if (portfolioService != null) {
-                portfolioService.updateOnBuy(traderId, sym, quantity, currentPrice);
+            // Step 4: Atomically decrement stock float & increment volume in DB
+            if (!stockDAO.updateQuantityAndVolume(conn, sym, quantity, true)) {
+                throw new InsufficientStockException(sym, quantity, stock.getAvailableQuantity());
             }
 
-            // Step 6: Insert transaction record in DB
+            // Step 5: Upsert portfolio holdings & weighted average price in DB
+            if (!portfolioDAO.recordBuy(conn, user.getUserId(), stock.getId(), sym, quantity, currentPrice)) {
+                throw new SQLException("Failed to update portfolio holdings for " + sym);
+            }
+
+            // Step 6: Insert transaction audit record in DB
             Transaction tx = new Transaction(
-                    traderId,
+                    user.getUserId(),
                     stock.getId(),
                     sym,
                     "BUY",
@@ -211,21 +160,21 @@ public class TradingService implements ITradingService, TradingServiceInterface 
                     currentPrice,
                     totalAmount
             );
-            transactionDAO.insert(conn, tx);
+            if (!transactionDAO.insert(conn, tx)) {
+                throw new SQLException("Failed to record transaction ledger entry.");
+            }
 
-            // Step 7: Commit JDBC Transaction
+            // Step 7: Commit ACID transaction
             conn.commit();
 
-            // Synchronize memory cache & history
-            tradeSequence++;
-            Trade trade = tx.toTrade(stock.getName());
-            tradeHistory.add(0, trade);
+            if (portfolioService != null) {
+                portfolioService.updateOnBuy(user.getUserId(), sym, quantity, currentPrice);
+            }
 
-            // Send notification
             if (notificationService != null) {
                 notificationService.sendNotification(new Notification(
-                        "NOTIF-" + System.currentTimeMillis() % 10000,
-                        traderId,
+                        "NOTIF-" + (System.currentTimeMillis() % 100000),
+                        user.getUserId(),
                         "Order Executed: BUY " + sym,
                         String.format("Purchased %d shares of %s at ₹%.2f. Total: ₹%.2f. Cash remaining: ₹%.2f.",
                                 quantity, sym, currentPrice, totalAmount, newBalance),
@@ -236,7 +185,6 @@ public class TradingService implements ITradingService, TradingServiceInterface 
             return tx;
 
         } catch (Exception e) {
-            // ROLLBACK DATABASE TRANSACTION ON ANY FAILURE
             if (conn != null) {
                 try {
                     System.err.println("[TradingService] Rolling back BUY transaction due to: " + e.getMessage());
@@ -262,17 +210,15 @@ public class TradingService implements ITradingService, TradingServiceInterface 
     }
 
     /**
-     * Executes SELL order with atomic JDBC transaction management:
-     * connection.setAutoCommit(false) -> checks -> updates -> connection.commit()
-     * Rollback on any failure.
+     * Executes SELL order with atomic JDBC transaction management.
      */
     @Override
     public synchronized Trade executeSell(String traderId, String symbol, int quantity)
             throws StockNotFoundException, InvalidInputException, InsufficientHoldingsException {
         try {
             Transaction tx = executeSellTransaction(traderId, symbol, quantity);
-            Stock stock = marketUpdateService.getStock(symbol.toUpperCase());
-            String stockName = stock != null ? stock.getName() : symbol.toUpperCase();
+            Stock stock = stockDAO.findBySymbol(tx.getSymbol());
+            String stockName = stock != null ? stock.getName() : tx.getSymbol();
             return tx.toTrade(stockName);
         } catch (InvalidStockException e) {
             throw new StockNotFoundException(e.getMessage());
@@ -286,20 +232,15 @@ public class TradingService implements ITradingService, TradingServiceInterface 
     }
 
     /**
-     * Core SELL transaction implementation fulfilling GUVI Rubric Section 9:
-     * 1. Validate request
-     * 2. Check portfolio ownership
-     * 3. Check available quantity
-     * 4. Calculate selling amount
-     * 5. Increase user balance
-     * 6. Decrease portfolio quantity
-     * 7. Insert transaction
-     * 8. Commit database transaction (or Rollback on failure)
+     * Core SELL transaction with full ACID rollback on any failure.
      */
     public synchronized Transaction executeSellTransaction(String traderId, String symbol, int quantity)
             throws InsufficientHoldingsException, InvalidStockException,
                    InvalidTransactionException, SQLException {
 
+        if (traderId == null || traderId.trim().isEmpty()) {
+            throw new InvalidTransactionException("Authenticated trader ID is required.");
+        }
         if (symbol == null || symbol.trim().isEmpty()) {
             throw new InvalidTransactionException("Stock symbol cannot be empty.");
         }
@@ -307,34 +248,29 @@ public class TradingService implements ITradingService, TradingServiceInterface 
             throw new InvalidTransactionException("Sell quantity must be greater than zero.");
         }
 
+        String uid = traderId.trim();
         String sym = symbol.toUpperCase().trim();
         Connection conn = null;
 
         try {
             conn = DBConnection.getConnection();
-            conn.setAutoCommit(false); // BEGIN JDBC TRANSACTION
+            conn.setAutoCommit(false); // BEGIN ACID JDBC TRANSACTION
 
-            // Step 1: Check stock on exchange
-            Stock stock = stockDAO.findBySymbol(sym);
-            if (stock == null) {
-                stock = marketUpdateService.getStock(sym);
-            }
+            // Step 1: Load authoritative stock from DB
+            Stock stock = stockDAO.findBySymbol(conn, sym);
             if (stock == null) {
                 throw new InvalidStockException("Stock symbol '" + sym + "' was not found on exchange.", sym);
             }
 
-            // Step 2: Check portfolio ownership in DB
-            Map<String, Integer> holdings = portfolioDAO.getHoldings(traderId);
-            int ownedQty = holdings.getOrDefault(sym, 0);
-
-            // Fallback to in-memory portfolio if DB is syncing
-            if (ownedQty < quantity && portfolioService != null) {
-                Portfolio p = portfolioService.getOrCreatePortfolio(traderId);
-                if (p != null) {
-                    ownedQty = Math.max(ownedQty, p.getQuantity(sym));
-                }
+            // Step 2: Load authoritative user from DB
+            User user = userDAO.findById(conn, uid);
+            if (user == null) {
+                throw new InvalidTransactionException("Trader account not found in database: " + uid);
             }
 
+            // Step 3: Check portfolio holdings strictly in DB within transaction
+            Map<String, Integer> holdings = portfolioDAO.getHoldings(conn, user.getUserId());
+            int ownedQty = holdings.getOrDefault(sym, 0);
             if (ownedQty < quantity) {
                 throw new InsufficientHoldingsException(String.format(
                         "Cannot sell %d shares of %s. You currently own only %d shares.",
@@ -345,37 +281,25 @@ public class TradingService implements ITradingService, TradingServiceInterface 
             double currentPrice = stock.getCurrentPrice();
             double totalProceeds = Math.round((currentPrice * quantity) * 100.0) / 100.0;
 
-            // Step 3: Increase user balance in DB
-            User user = userDAO.findById(traderId);
-            if (user == null && userService != null) {
-                try {
-                    user = userService.getUserById(traderId);
-                } catch (UserNotFoundException ignored) {}
-            }
-            double oldBalance = user != null ? user.getBalance() : 0.0;
-            double newBalance = Math.round((oldBalance + totalProceeds) * 100.0) / 100.0;
-            userDAO.updateBalance(conn, traderId, newBalance);
-            if (user != null) {
-                user.setBalance(newBalance);
-                if (user instanceof Trader) {
-                    ((Trader) user).setBalance(newBalance);
-                }
+            // Step 4: Credit cash balance in DB
+            double newBalance = Math.round((user.getBalance() + totalProceeds) * 100.0) / 100.0;
+            if (!userDAO.updateBalance(conn, user.getUserId(), newBalance)) {
+                throw new SQLException("Failed to update cash balance for trader: " + user.getUserId());
             }
 
-            // Step 4: Decrease portfolio holdings in DB
-            portfolioDAO.recordSell(conn, traderId, sym, quantity);
-            double realizedGain = 0.0;
-            if (portfolioService != null) {
-                realizedGain = portfolioService.updateOnSell(traderId, sym, quantity, currentPrice);
+            // Step 5: Decrease/remove portfolio holding in DB
+            if (!portfolioDAO.recordSell(conn, user.getUserId(), sym, quantity)) {
+                throw new SQLException("Failed to update portfolio holding for " + sym);
             }
 
-            // Step 5: Increase stock available inventory in DB
-            stockDAO.updateQuantityAndVolume(conn, sym, quantity, false);
-            stock.addQuantity(quantity);
+            // Step 6: Return shares to market float in DB
+            if (!stockDAO.updateQuantityAndVolume(conn, sym, quantity, false)) {
+                throw new SQLException("Failed to update stock inventory for " + sym);
+            }
 
-            // Step 6: Insert transaction record in DB
+            // Step 7: Insert transaction audit record in DB
             Transaction tx = new Transaction(
-                    traderId,
+                    user.getUserId(),
                     stock.getId(),
                     sym,
                     "SELL",
@@ -383,24 +307,25 @@ public class TradingService implements ITradingService, TradingServiceInterface 
                     currentPrice,
                     totalProceeds
             );
-            transactionDAO.insert(conn, tx);
+            if (!transactionDAO.insert(conn, tx)) {
+                throw new SQLException("Failed to record transaction ledger entry.");
+            }
 
-            // Step 7: Commit JDBC Transaction
+            // Step 8: Commit ACID transaction
             conn.commit();
 
-            // Synchronize memory cache & history
-            tradeSequence++;
-            Trade trade = tx.toTrade(stock.getName());
-            tradeHistory.add(0, trade);
+            double realizedGain = 0.0;
+            if (portfolioService != null) {
+                realizedGain = portfolioService.updateOnSell(user.getUserId(), sym, quantity, currentPrice);
+            }
 
-            // Send notification
             if (notificationService != null) {
                 notificationService.sendNotification(new Notification(
-                        "NOTIF-" + System.currentTimeMillis() % 10000,
-                        traderId,
+                        "NOTIF-" + (System.currentTimeMillis() % 100000),
+                        user.getUserId(),
                         "Order Executed: SELL " + sym,
-                        String.format("Sold %d shares of %s at ₹%.2f. Proceeds: ₹%.2f. Realized P&L: ₹%.2f. Balance: ₹%.2f.",
-                                quantity, sym, currentPrice, totalProceeds, realizedGain, newBalance),
+                        String.format("Sold %d shares of %s at ₹%.2f. Proceeds: ₹%.2f. Balance: ₹%.2f.",
+                                quantity, sym, currentPrice, totalProceeds, newBalance),
                         Notification.NotificationType.TRADE_SELL
                 ));
             }
@@ -408,7 +333,6 @@ public class TradingService implements ITradingService, TradingServiceInterface 
             return tx;
 
         } catch (Exception e) {
-            // ROLLBACK DATABASE TRANSACTION ON ANY FAILURE
             if (conn != null) {
                 try {
                     System.err.println("[TradingService] Rolling back SELL transaction due to: " + e.getMessage());
@@ -437,8 +361,7 @@ public class TradingService implements ITradingService, TradingServiceInterface 
         try {
             return transactionDAO.findByUserId(traderId);
         } catch (SQLException e) {
-            System.err.println("[TradingService] Error fetching transactions: " + e.getMessage());
-            return new ArrayList<>();
+            throw new RuntimeException("Database error fetching transactions: " + e.getMessage(), e);
         }
     }
 
@@ -447,38 +370,52 @@ public class TradingService implements ITradingService, TradingServiceInterface 
         try {
             return transactionDAO.findAll();
         } catch (SQLException e) {
-            System.err.println("[TradingService] Error fetching all transactions: " + e.getMessage());
-            return new ArrayList<>();
+            throw new RuntimeException("Database error fetching all transactions: " + e.getMessage(), e);
         }
+    }
+
+    private List<Trade> mapTransactionsToTrades(List<Transaction> txList) throws SQLException {
+        Map<String, Stock> stocksBySymbol = stockDAO.findAllAsMap();
+        List<Trade> trades = new ArrayList<>(txList.size());
+        for (Transaction tx : txList) {
+            Stock st = stocksBySymbol.get(tx.getSymbol().toUpperCase());
+            String stockName = (st != null) ? st.getName() : tx.getSymbol();
+            trades.add(tx.toTrade(stockName));
+        }
+        return trades;
     }
 
     @Override
     public List<Trade> getAllTrades() {
-        return Collections.unmodifiableList(tradeHistory);
+        try {
+            return mapTransactionsToTrades(transactionDAO.findAll());
+        } catch (SQLException e) {
+            throw new RuntimeException("Database error loading trades: " + e.getMessage(), e);
+        }
     }
 
     @Override
     public List<Trade> getTradesForTrader(String traderId) {
-        List<Trade> result = new ArrayList<>();
-        if (traderId == null) return result;
-        for (Trade t : tradeHistory) {
-            if (t.getTraderId().equalsIgnoreCase(traderId.trim())) {
-                result.add(t);
-            }
+        if (traderId == null || traderId.trim().isEmpty()) {
+            return new ArrayList<>();
         }
-        return result;
+        try {
+            return mapTransactionsToTrades(transactionDAO.findByUserId(traderId.trim()));
+        } catch (SQLException e) {
+            throw new RuntimeException("Database error loading trades for trader '" + traderId + "': " + e.getMessage(), e);
+        }
     }
 
     @Override
     public int getTotalTradeCount() {
-        return tradeHistory.size();
+        return getAllTransactions().size();
     }
 
     @Override
     public int getBuyTradeCount() {
         int count = 0;
-        for (Trade t : tradeHistory) {
-            if (t.getTradeType() == TradeType.BUY) count++;
+        for (Transaction tx : getAllTransactions()) {
+            if ("BUY".equalsIgnoreCase(tx.getTransactionType())) count++;
         }
         return count;
     }
@@ -486,8 +423,8 @@ public class TradingService implements ITradingService, TradingServiceInterface 
     @Override
     public int getSellTradeCount() {
         int count = 0;
-        for (Trade t : tradeHistory) {
-            if (t.getTradeType() == TradeType.SELL) count++;
+        for (Transaction tx : getAllTransactions()) {
+            if ("SELL".equalsIgnoreCase(tx.getTransactionType())) count++;
         }
         return count;
     }
@@ -495,8 +432,8 @@ public class TradingService implements ITradingService, TradingServiceInterface 
     @Override
     public double getTotalTradingVolume() {
         double vol = 0.0;
-        for (Trade t : tradeHistory) {
-            vol += t.getTotalAmount();
+        for (Transaction tx : getAllTransactions()) {
+            vol += tx.getTotalAmount();
         }
         return Math.round(vol * 100.0) / 100.0;
     }

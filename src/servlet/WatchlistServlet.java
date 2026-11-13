@@ -25,16 +25,30 @@ public class WatchlistServlet extends BaseServlet {
     protected void doGet(HttpServletRequest request, HttpServletResponse response)
             throws ServletException, IOException {
         User user = getAuthenticatedUser(request);
-        String targetUserId = (user != null) ? user.getUserId() : request.getParameter("userId");
-
-        if (targetUserId == null || targetUserId.trim().isEmpty()) {
+        if (user == null) {
             sendJsonResponse(response, HttpServletResponse.SC_UNAUTHORIZED,
                     "{\"success\":false,\"error\":\"Please log in to view your watchlist.\"}");
             return;
         }
 
+        String requestedUserId = request.getParameter("userId");
+        if (requestedUserId == null || requestedUserId.trim().isEmpty()) {
+            String path = request.getRequestURI();
+            if (path != null && path.startsWith("/api/watchlist/") && path.length() > "/api/watchlist/".length()) {
+                requestedUserId = path.substring("/api/watchlist/".length());
+            }
+        }
+
+        String targetUserId = (requestedUserId != null && !requestedUserId.trim().isEmpty())
+                ? requestedUserId.trim()
+                : user.getUserId();
+
+        if (!ensureOwnerOrAdmin(request, response, targetUserId)) {
+            return;
+        }
+
         try {
-            List<String> list = watchlistDAO.getWatchlist(targetUserId.trim());
+            List<String> list = watchlistDAO.getWatchlist(targetUserId);
             StringBuilder sb = new StringBuilder();
             sb.append("{\"success\":true,\"watchlist\":[");
             for (int i = 0; i < list.size(); i++) {
@@ -53,14 +67,23 @@ public class WatchlistServlet extends BaseServlet {
     protected void doPost(HttpServletRequest request, HttpServletResponse response)
             throws ServletException, IOException {
         User user = getAuthenticatedUser(request);
-        Map<String, String> body = parseJsonBody(request);
-
-        String targetUserId = (user != null) ? user.getUserId() : body.get("userId");
-        if (targetUserId == null) targetUserId = request.getParameter("userId");
-
-        if (targetUserId == null || targetUserId.trim().isEmpty()) {
+        if (user == null) {
             sendJsonResponse(response, HttpServletResponse.SC_UNAUTHORIZED,
                     "{\"success\":false,\"error\":\"Please log in to manage your watchlist.\"}");
+            return;
+        }
+
+        Map<String, String> body = parseJsonBody(request);
+        String requestedUserId = body.get("userId");
+        if (requestedUserId == null || requestedUserId.trim().isEmpty()) {
+            requestedUserId = request.getParameter("userId");
+        }
+
+        String targetUserId = (requestedUserId != null && !requestedUserId.trim().isEmpty())
+                ? requestedUserId.trim()
+                : user.getUserId();
+
+        if (!ensureOwnerOrAdmin(request, response, targetUserId)) {
             return;
         }
 

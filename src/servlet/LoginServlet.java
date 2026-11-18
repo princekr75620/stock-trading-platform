@@ -11,8 +11,7 @@ import java.util.Map;
 
 /**
  * Servlet handling User Authentication (Login).
- * Establishes an authenticated HttpSession upon valid credentials.
- * Fulfills Servlets & Authentication (Rubric Section 10 & 11) for GUVI Evaluation.
+ * Establishes an authenticated HttpSession with session-fixation rotation and CSRF token.
  */
 public class LoginServlet extends BaseServlet {
     private static final long serialVersionUID = 1L;
@@ -38,14 +37,16 @@ public class LoginServlet extends BaseServlet {
         try {
             User user = authService.login(usernameOrEmail.trim(), password);
             if (user != null) {
-                // Establish session-based authentication
                 setAuthenticatedUser(request, user);
+                String csrfToken = getCsrfToken(request);
 
-                String json = String.format("{\"success\":true,\"user\":%s}", JsonHelper.userToJson(user));
+                String json = String.format("{\"success\":true,\"user\":%s,\"csrfToken\":\"%s\"}",
+                        JsonHelper.userToJson(user),
+                        JsonHelper.escape(csrfToken));
                 sendJsonResponse(response, HttpServletResponse.SC_OK, json);
             } else {
                 sendJsonResponse(response, HttpServletResponse.SC_UNAUTHORIZED,
-                        "{\"success\":false,\"error\":\"Invalid credentials.\"}");
+                        "{\"success\":false,\"error\":\"Invalid username/email or password.\"}");
             }
         } catch (Exception e) {
             sendJsonResponse(response, HttpServletResponse.SC_UNAUTHORIZED,

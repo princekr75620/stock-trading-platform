@@ -3,13 +3,37 @@ import path from 'path';
 import { createServer as createViteServer } from 'vite';
 import { spawn, execSync, ChildProcess } from 'child_process';
 
-const PORT = Number(process.env.PORT || 3000);
+const rawPort = process.env.PORT;
+const PORT = Number(
+  rawPort && rawPort !== process.env.NGINX_PORT
+    ? rawPort
+    : process.env.DEFAULT_APP_PORT || 3000
+);
+const JAVA_HOST = process.env.JAVA_HOST || '127.0.0.1';
 const JAVA_PORT = Number(process.env.JAVA_PORT || 8765);
 const HEALTH_POLL_INTERVAL_MS = 250;
 const HEALTH_TIMEOUT_MS = Number(process.env.JAVA_STARTUP_TIMEOUT_MS || 20000);
 
 let javaProcess: ChildProcess | null = null;
 let shuttingDown = false;
+
+function resolveJavaBinary(): string {
+  const candidates = [
+    'java',
+    '/usr/bin/java',
+    '/usr/lib/jvm/java-17-openjdk-amd64/bin/java',
+    '/usr/lib/jvm/java-17-openjdk-arm64/bin/java',
+  ];
+  for (const bin of candidates) {
+    try {
+      execSync(`${bin} -version`, { stdio: 'ignore' });
+      return bin;
+    } catch {
+      // try next candidate
+    }
+  }
+  return 'java';
+}
 
 function compileJavaBackend(): void {
   if (process.env.SKIP_JAVA_COMPILE === 'true') {
@@ -23,7 +47,7 @@ function compileJavaBackend(): void {
 
 async function probeJavaHealth(timeoutMs = 1500): Promise<{ ok: boolean; status: number; data?: any; error?: string }> {
   try {
-    const res = await fetch(`http://127.0.0.1:${JAVA_PORT}/api/health`, {
+    const res = await fetch(`http://${JAVA_HOST}:${JAVA_PORT}/api/health`, {
       signal: AbortSignal.timeout(timeoutMs),
     });
     const text = await res.text();
@@ -49,8 +73,9 @@ async function probeJavaHealth(timeoutMs = 1500): Promise<{ ok: boolean; status:
 
 async function startAndAwaitJavaBackend(): Promise<void> {
   return new Promise((resolve, reject) => {
-    console.log(`[Server Gateway] Launching authoritative Java HTTP Server on port ${JAVA_PORT}...`);
-    const child = spawn('java', ['-cp', 'lib/*:out', 'server.TradingPlatformHttpServer', String(JAVA_PORT)], {
+    const javaBin = resolveJavaBinary();
+    console.log(`[Server Gateway] Launching authoritative Java HTTP Server on ${JAVA_HOST}:${JAVA_PORT}...`);
+    const child = spawn(javaBin, ['-cp', 'lib/*:out', 'server.TradingPlatformHttpServer', String(JAVA_PORT)], {
       stdio: 'inherit',
     });
     javaProcess = child;
@@ -82,7 +107,7 @@ async function startAndAwaitJavaBackend(): Promise<void> {
     const poll = async () => {
       if (settled) return;
       if (Date.now() > deadline) {
-        failStartup(new Error(`Timed out after ${HEALTH_TIMEOUT_MS}ms waiting for Java /api/health readiness on port ${JAVA_PORT}`));
+        failStartup(new Error(`Timed out after ${HEALTH_TIMEOUT_MS}ms waiting for Java /api/health readiness on ${JAVA_HOST}:${JAVA_PORT}`));
         return;
       }
 
@@ -90,7 +115,7 @@ async function startAndAwaitJavaBackend(): Promise<void> {
       if (health.ok) {
         if (!settled) {
           settled = true;
-          console.log(`[Server Gateway] Java backend verified healthy on port ${JAVA_PORT}`);
+          console.log(`[Server Gateway] Java backend verified healthy on ${JAVA_HOST}:${JAVA_PORT}`);
           resolve();
         }
         return;
@@ -134,7 +159,24 @@ async function startServer(): Promise<void> {
   await startAndAwaitJavaBackend();
 
   const app = express();
-  app.use(express.json());
+  app.disable('x-powered-by');
+  app.use((_req, res, next) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+    res.setHeader('Permissions-Policy', 'geolocation=(), microphone=(), camera=()');
+    next();
+  });
+  app.use(express.json({ limit: '1mb' }));
+  app.use((err: any, _req: any, res: any, next: any) => {
+    if (err?.type === 'entity.too.large') {
+      return res.status(413).json({ success: false, error: 'Request payload exceeds maximum allowed size.' });
+    }
+    if (err instanceof SyntaxError && 'body' in err) {
+      return res.status(400).json({ success: false, error: 'Malformed JSON request body.' });
+    }
+    return next(err);
+  });
 
   // Gateway health check reflects real downstream Java + JDBC health (never reports UP while Java is down)
   app.get('/api/health', async (_req, res) => {
@@ -143,7 +185,7 @@ async function startServer(): Promise<void> {
       return res.status(503).json({
         status: 'DOWN',
         javaRunning: false,
-        backend: `Java SE 17 HTTP Server (Port ${JAVA_PORT}) offline`,
+        backend: 'Trading Engine Offline',
         primaryArchitecture: 'Express Gateway -> Java HttpServer + ServletBridge -> JDBC',
         timestamp: new Date().toISOString(),
       });
@@ -154,8 +196,7 @@ async function startServer(): Promise<void> {
       return res.status(503).json({
         status: 'DOWN',
         javaRunning: false,
-        backend: `Java SE 17 HTTP Server (Port ${JAVA_PORT}) unavailable`,
-        error: health.error || health.data?.error || `HTTP ${health.status}`,
+        backend: 'Trading Engine Unavailable',
         primaryArchitecture: 'Express Gateway -> Java HttpServer + ServletBridge -> JDBC',
         timestamp: new Date().toISOString(),
       });
@@ -164,7 +205,7 @@ async function startServer(): Promise<void> {
     return res.status(200).json({
       status: 'UP',
       javaRunning: true,
-      backend: `Java SE 17 HTTP Server + ServletBridge (Port ${JAVA_PORT})`,
+      backend: 'Online Stock Trading Engine',
       databaseConnected: Boolean(health.data?.databaseConnected),
       databaseEngine: health.data?.databaseEngine || 'Unknown',
       primaryArchitecture: 'Express Gateway -> Java HttpServer + ServletBridge -> JDBC',
@@ -172,7 +213,7 @@ async function startServer(): Promise<void> {
     });
   });
 
-  // Reverse proxy all remaining /api/* traffic to Java backend on JAVA_PORT
+  // Reverse proxy all remaining /api/* traffic to Java backend on JAVA_HOST:JAVA_PORT
   app.use('/api', async (req, res) => {
     if (javaProcess === null) {
       return res.status(503).json({
@@ -182,7 +223,7 @@ async function startServer(): Promise<void> {
     }
 
     try {
-      const targetUrl = `http://127.0.0.1:${JAVA_PORT}${req.originalUrl}`;
+      const targetUrl = `http://${JAVA_HOST}:${JAVA_PORT}${req.originalUrl}`;
       const hopByHopHeaders = new Set([
         'connection',
         'keep-alive',
@@ -202,6 +243,12 @@ async function startServer(): Promise<void> {
         if (val && !hopByHopHeaders.has(lowerKey)) {
           forwardHeaders[lowerKey] = Array.isArray(val) ? val.join('; ') : String(val);
         }
+      }
+      if (!forwardHeaders['x-forwarded-proto']) {
+        forwardHeaders['x-forwarded-proto'] = req.protocol || 'http';
+      }
+      if (!forwardHeaders['x-forwarded-host'] && req.headers.host) {
+        forwardHeaders['x-forwarded-host'] = String(req.headers.host);
       }
 
       const fetchOptions: RequestInit = {

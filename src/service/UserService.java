@@ -53,8 +53,8 @@ public class UserService implements IUserService {
         if (user.getEmail() == null || !user.getEmail().contains("@")) {
             throw new InvalidInputException("A valid email address is required.");
         }
-        if (user.getPassword() == null || user.getPassword().length() < 4) {
-            throw new InvalidInputException("Password must be at least 4 characters long.");
+        if (user.getPassword() == null || user.getPassword().length() < 6) {
+            throw new InvalidInputException("Password must be at least 6 characters long.");
         }
 
         String uid = user.getUserId().trim();
@@ -222,8 +222,8 @@ public class UserService implements IUserService {
             user.setEmail(trimmedEmail);
         }
         if (password != null && !password.trim().isEmpty()) {
-            if (password.length() < 4) {
-                throw new InvalidInputException("Password must be at least 4 characters.");
+            if (password.length() < 6) {
+                throw new InvalidInputException("Password must be at least 6 characters.");
             }
             if (!PasswordHasher.isBCryptHash(password)) {
                 user.setPassword(PasswordHasher.hashPassword(password));
@@ -242,7 +242,10 @@ public class UserService implements IUserService {
             return;
         }
         try {
-            userDAO.update(user);
+            boolean updated = userDAO.update(user);
+            if (!updated) {
+                throw new RuntimeException("User update affected 0 rows for user '" + user.getUserId() + "'.");
+            }
         } catch (SQLException e) {
             throw new RuntimeException("Database error updating user '" + user.getUserId() + "': " + e.getMessage(), e);
         }
@@ -291,7 +294,10 @@ public class UserService implements IUserService {
             return;
         }
         try {
-            userDAO.update(converted);
+            boolean updated = userDAO.update(converted);
+            if (!updated) {
+                throw new RuntimeException("User role update affected 0 rows for '" + userId + "'.");
+            }
         } catch (SQLException e) {
             throw new RuntimeException("Database error updating user role: " + e.getMessage(), e);
         }

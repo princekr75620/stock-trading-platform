@@ -12,6 +12,13 @@ interface TradeModalProps {
   onTradeCompleted: () => void;
 }
 
+function createIdempotencyKey(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return `ord-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
 export const TradeModal: React.FC<TradeModalProps> = ({
   isOpen,
   onClose,
@@ -26,13 +33,19 @@ export const TradeModal: React.FC<TradeModalProps> = ({
   const [loading, setLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
+  const [idempotencyKey, setIdempotencyKey] = useState<string>(() => createIdempotencyKey());
 
   useEffect(() => {
     setTradeType(initialType);
     setError(null);
     setSuccessMsg(null);
     setQuantity(10);
+    setIdempotencyKey(createIdempotencyKey());
   }, [stock, initialType, isOpen]);
+
+  useEffect(() => {
+    setIdempotencyKey(createIdempotencyKey());
+  }, [tradeType, quantity]);
 
   if (!isOpen || !stock) return null;
 
@@ -60,10 +73,10 @@ export const TradeModal: React.FC<TradeModalProps> = ({
 
     try {
       if (tradeType === 'BUY') {
-        const res = await api.executeBuy(currentUser.userId, stock.symbol, quantity);
+        const res = await api.executeBuy(currentUser.userId, stock.symbol, quantity, idempotencyKey);
         setSuccessMsg(res.message || `Successfully purchased ${quantity} shares of ${stock.symbol}`);
       } else {
-        const res = await api.executeSell(currentUser.userId, stock.symbol, quantity);
+        const res = await api.executeSell(currentUser.userId, stock.symbol, quantity, idempotencyKey);
         setSuccessMsg(res.message || `Successfully sold ${quantity} shares of ${stock.symbol}`);
       }
       onTradeCompleted();

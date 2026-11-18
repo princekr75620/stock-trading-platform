@@ -86,29 +86,44 @@ public class UserManagementServlet extends BaseServlet {
     }
 
     private void handleCreateUser(Map<String, String> body, HttpServletResponse response) throws IOException {
-        String name = body.get("name");
-        String email = body.get("email");
+        String name = body.get("name") != null ? body.get("name").trim() : null;
+        String email = body.get("email") != null ? body.get("email").trim() : null;
         String password = body.get("password");
         String roleStr = body.get("role");
-        String userId = body.get("userId");
+        String userId = body.get("userId") != null ? body.get("userId").trim() : null;
 
-        if (name == null || email == null || password == null) {
+        if (name == null || name.isEmpty() || email == null || !email.contains("@") || !email.contains(".")
+                || password == null || password.length() < 6) {
             sendJsonResponse(response, HttpServletResponse.SC_BAD_REQUEST,
-                    "{\"success\":false,\"error\":\"Name, email, and password are required.\"}");
+                    "{\"success\":false,\"error\":\"Valid name, email, and password (min 6 chars) are required.\"}");
             return;
         }
 
-        if (userId == null || userId.trim().isEmpty()) {
-            userId = email.split("@")[0].replaceAll("[^a-zA-Z0-9]", "").toLowerCase();
+        if (userId == null || userId.isEmpty()) {
+            userId = email.split("@")[0].replaceAll("[^a-zA-Z0-9_-]", "").toLowerCase();
+        }
+        if (!userId.matches("[a-zA-Z0-9_-]{3,40}")) {
+            sendJsonResponse(response, HttpServletResponse.SC_BAD_REQUEST,
+                    "{\"success\":false,\"error\":\"userId must be 3-40 alphanumeric characters.\"}");
+            return;
         }
 
         UserRole role = "ADMIN".equalsIgnoreCase(roleStr) ? UserRole.ADMIN : UserRole.TRADER;
         double balance = 50000.0;
-        try {
-            if (body.containsKey("initialBalance")) {
-                balance = Double.parseDouble(body.get("initialBalance"));
+        if (body.containsKey("initialBalance") && body.get("initialBalance") != null && !body.get("initialBalance").trim().isEmpty()) {
+            try {
+                balance = Double.parseDouble(body.get("initialBalance").trim());
+                if (!Double.isFinite(balance) || balance < 0 || balance > 1_000_000_000.0) {
+                    sendJsonResponse(response, HttpServletResponse.SC_BAD_REQUEST,
+                            "{\"success\":false,\"error\":\"initialBalance must be between 0 and 1,000,000,000.\"}");
+                    return;
+                }
+            } catch (NumberFormatException e) {
+                sendJsonResponse(response, HttpServletResponse.SC_BAD_REQUEST,
+                        "{\"success\":false,\"error\":\"Invalid initialBalance format.\"}");
+                return;
             }
-        } catch (NumberFormatException ignored) {}
+        }
 
         User newUser;
         if (role == UserRole.ADMIN) {
@@ -122,43 +137,61 @@ public class UserManagementServlet extends BaseServlet {
             userService.createUser(newUser);
             String json = String.format("{\"success\":true,\"user\":%s}", JsonHelper.userToJson(newUser));
             sendJsonResponse(response, HttpServletResponse.SC_CREATED, json);
-        } catch (Exception e) {
+        } catch (exception.DuplicateUserException | exception.InvalidInputException e) {
             sendJsonResponse(response, HttpServletResponse.SC_BAD_REQUEST,
                     String.format("{\"success\":false,\"error\":\"%s\"}", JsonHelper.escape(e.getMessage())));
+        } catch (Exception e) {
+            System.err.println("[UserManagementServlet] Error creating user: " + e.getMessage());
+            sendJsonResponse(response, HttpServletResponse.SC_INTERNAL_SERVER_ERROR,
+                    "{\"success\":false,\"error\":\"Unable to create user due to a server error.\"}");
         }
     }
 
     private void handleUpdateUser(Map<String, String> body, HttpServletResponse response) throws IOException {
         String userId = body.get("userId");
-        if (userId == null) {
+        if (userId == null || userId.trim().isEmpty()) {
             sendJsonResponse(response, HttpServletResponse.SC_BAD_REQUEST, "{\"success\":false,\"error\":\"userId is required.\"}");
+            return;
+        }
+        String newPassword = body.get("password");
+        if (newPassword != null && !newPassword.isEmpty() && newPassword.length() < 6) {
+            sendJsonResponse(response, HttpServletResponse.SC_BAD_REQUEST,
+                    "{\"success\":false,\"error\":\"Updated password must be at least 6 characters.\"}");
             return;
         }
 
         try {
-            userService.updateUserDetails(userId, body.get("name"), body.get("email"), body.get("password"));
-            User updated = userService.getUserById(userId);
+            userService.updateUserDetails(userId.trim(), body.get("name"), body.get("email"), newPassword);
+            User updated = userService.getUserById(userId.trim());
             String json = String.format("{\"success\":true,\"user\":%s}", JsonHelper.userToJson(updated));
             sendJsonResponse(response, HttpServletResponse.SC_OK, json);
-        } catch (Exception e) {
+        } catch (exception.InvalidInputException | IllegalArgumentException e) {
             sendJsonResponse(response, HttpServletResponse.SC_BAD_REQUEST,
                     String.format("{\"success\":false,\"error\":\"%s\"}", JsonHelper.escape(e.getMessage())));
+        } catch (Exception e) {
+            System.err.println("[UserManagementServlet] Error updating user: " + e.getMessage());
+            sendJsonResponse(response, HttpServletResponse.SC_INTERNAL_SERVER_ERROR,
+                    "{\"success\":false,\"error\":\"Unable to update user.\"}");
         }
     }
 
     private void handleDeleteUser(Map<String, String> body, HttpServletResponse response) throws IOException {
         String userId = body.get("userId");
-        if (userId == null) {
+        if (userId == null || userId.trim().isEmpty()) {
             sendJsonResponse(response, HttpServletResponse.SC_BAD_REQUEST, "{\"success\":false,\"error\":\"userId is required.\"}");
             return;
         }
 
         try {
-            userService.deleteUser(userId);
+            userService.deleteUser(userId.trim());
             sendJsonResponse(response, HttpServletResponse.SC_OK, "{\"success\":true,\"message\":\"User successfully deleted.\"}");
-        } catch (Exception e) {
+        } catch (IllegalArgumentException e) {
             sendJsonResponse(response, HttpServletResponse.SC_BAD_REQUEST,
                     String.format("{\"success\":false,\"error\":\"%s\"}", JsonHelper.escape(e.getMessage())));
+        } catch (Exception e) {
+            System.err.println("[UserManagementServlet] Error deleting user: " + e.getMessage());
+            sendJsonResponse(response, HttpServletResponse.SC_INTERNAL_SERVER_ERROR,
+                    "{\"success\":false,\"error\":\"Unable to delete user.\"}");
         }
     }
 }

@@ -6,6 +6,26 @@ import {
 
 const API_BASE = '/api';
 
+// In-memory CSRF token bound to the current authenticated HTTP session
+let csrfToken: string | null = null;
+
+function buildMutationHeaders(extra?: Record<string, string>): Record<string, string> {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+  };
+  if (csrfToken) {
+    headers['X-CSRF-Token'] = csrfToken;
+  }
+  if (extra) {
+    for (const [k, v] of Object.entries(extra)) {
+      if (v !== undefined && v !== null) {
+        headers[k] = v;
+      }
+    }
+  }
+  return headers;
+}
+
 async function handleResponse<T>(res: Response): Promise<T> {
   const text = await res.text();
   let data: any;
@@ -23,8 +43,8 @@ async function handleResponse<T>(res: Response): Promise<T> {
 
 /**
  * Centralized API Client Service for the Stock Trading Platform.
- * Communicates with the backend REST endpoints for trading, portfolio,
- * authentication, market updates, and administration.
+ * Communicates with the Java backend REST endpoints through the Node Express gateway,
+ * attaching session-bound X-CSRF-Token headers and order Idempotency-Key protection.
  */
 export const api = {
   /**
@@ -38,44 +58,66 @@ export const api = {
   /**
    * Authenticates a user by username/email and password.
    */
-  async login(usernameOrEmail: string, password: string): Promise<{ success: boolean; user: User }> {
+  async login(usernameOrEmail: string, password: string): Promise<{ success: boolean; user: User; csrfToken?: string }> {
     const res = await fetch(`${API_BASE}/auth/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ usernameOrEmail, password }),
     });
-    return handleResponse(res);
+    const data = await handleResponse<{ success: boolean; user: User; csrfToken?: string }>(res);
+    if (data?.csrfToken) {
+      csrfToken = data.csrfToken;
+    }
+    return data;
   },
 
   /**
    * Public user registration creating a TRADER account via POST /api/auth/register.
    */
-  async register(data: { userId?: string; name: string; email: string; password: string }): Promise<{ success: boolean; user: User }> {
+  async register(data: { userId?: string; name: string; email: string; password: string }): Promise<{ success: boolean; user: User; csrfToken?: string }> {
     const res = await fetch(`${API_BASE}/auth/register`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data),
     });
-    return handleResponse(res);
+    const resData = await handleResponse<{ success: boolean; user: User; csrfToken?: string }>(res);
+    if (resData?.csrfToken) {
+      csrfToken = resData.csrfToken;
+    }
+    return resData;
   },
 
   /**
-   * Logs out the current user and clears server session if any.
+   * Logs out the current user and invalidates the server session.
    */
   async logout(): Promise<{ success: boolean }> {
-    const res = await fetch(`${API_BASE}/auth/logout`, { method: 'POST' });
-    return handleResponse(res);
+    try {
+      const res = await fetch(`${API_BASE}/auth/logout`, {
+        method: 'POST',
+        headers: buildMutationHeaders(),
+      });
+      return handleResponse(res);
+    } finally {
+      csrfToken = null;
+    }
   },
 
   /**
-   * Validates active server session and retrieves currently authenticated user.
+   * Validates active server session, retrieves currently authenticated user, and syncs session CSRF token.
    */
-  async getSession(): Promise<{ authenticated: boolean; user: User | null }> {
+  async getSession(): Promise<{ authenticated: boolean; user: User | null; csrfToken?: string }> {
     const res = await fetch(`${API_BASE}/auth/session`);
     if (res.status === 401) {
+      csrfToken = null;
       return { authenticated: false, user: null };
     }
-    return handleResponse(res);
+    const data = await handleResponse<{ authenticated: boolean; user: User | null; csrfToken?: string }>(res);
+    if (data?.authenticated && data?.csrfToken) {
+      csrfToken = data.csrfToken;
+    } else if (!data?.authenticated) {
+      csrfToken = null;
+    }
+    return data;
   },
 
   /**
@@ -87,27 +129,35 @@ export const api = {
   },
 
   /**
-   * Executes a BUY order for a given stock symbol and quantity.
-   * Validates sufficient cash balance and stock float before recording transaction.
+   * Executes a BUY order for a given stock symbol and quantity with Idempotency-Key deduplication.
    */
-  async executeBuy(traderId: string, symbol: string, quantity: number): Promise<{ success: boolean; trade: Trade; portfolio: Portfolio; message: string }> {
+  async executeBuy(
+    traderId: string,
+    symbol: string,
+    quantity: number,
+    idempotencyKey?: string
+  ): Promise<{ success: boolean; trade: Trade; portfolio: Portfolio; message: string }> {
     const res = await fetch(`${API_BASE}/trades/buy`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ traderId, symbol, quantity: String(quantity) }),
+      headers: buildMutationHeaders(idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : undefined),
+      body: JSON.stringify({ traderId, symbol, quantity: String(quantity), idempotencyKey }),
     });
     return handleResponse(res);
   },
 
   /**
-   * Executes a SELL order for a given stock symbol and quantity.
-   * Validates that the trader owns sufficient shares in their portfolio.
+   * Executes a SELL order for a given stock symbol and quantity with Idempotency-Key deduplication.
    */
-  async executeSell(traderId: string, symbol: string, quantity: number): Promise<{ success: boolean; trade: Trade; portfolio: Portfolio; message: string }> {
+  async executeSell(
+    traderId: string,
+    symbol: string,
+    quantity: number,
+    idempotencyKey?: string
+  ): Promise<{ success: boolean; trade: Trade; portfolio: Portfolio; message: string }> {
     const res = await fetch(`${API_BASE}/trades/sell`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ traderId, symbol, quantity: String(quantity) }),
+      headers: buildMutationHeaders(idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : undefined),
+      body: JSON.stringify({ traderId, symbol, quantity: String(quantity), idempotencyKey }),
     });
     return handleResponse(res);
   },
@@ -138,15 +188,12 @@ export const api = {
   },
 
   /**
-   * Refreshes market prices from live financial feeds across Indian equities.
+   * Refreshes market prices across Indian equities.
    */
   async triggerMarketTick(): Promise<{ success: boolean; message: string }> {
     const res = await fetch(`${API_BASE}/market/tick`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Requested-With': 'XMLHttpRequest'
-      },
+      headers: buildMutationHeaders(),
       body: JSON.stringify({})
     });
     return handleResponse(res);
@@ -161,12 +208,12 @@ export const api = {
   },
 
   /**
-   * Marks all alerts/notifications for a given user as read.
+   * Marks all alerts/notifications for the authenticated user as read.
    */
   async markNotificationsRead(userId: string): Promise<{ success: boolean }> {
     const res = await fetch(`${API_BASE}/notifications/read`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: buildMutationHeaders(),
       body: JSON.stringify({ userId }),
     });
     return handleResponse(res);
@@ -175,7 +222,7 @@ export const api = {
   async depositFunds(traderId: string, amount: number): Promise<{ success: boolean; cashBalance: number }> {
     const res = await fetch(`${API_BASE}/trader/deposit`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: buildMutationHeaders(),
       body: JSON.stringify({ traderId, amount: String(amount) }),
     });
     return handleResponse(res);
@@ -184,7 +231,7 @@ export const api = {
   async updateTraderPreferences(traderId: string, emailAlertsEnabled: boolean, alertThresholdPercent: number): Promise<{ success: boolean }> {
     const res = await fetch(`${API_BASE}/trader/preferences`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: buildMutationHeaders(),
       body: JSON.stringify({
         traderId,
         emailAlertsEnabled: String(emailAlertsEnabled),
@@ -216,7 +263,7 @@ export const api = {
   }): Promise<{ success: boolean; user: User }> {
     const res = await fetch(`${API_BASE}/admin/users`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: buildMutationHeaders(),
       body: JSON.stringify(data),
     });
     return handleResponse(res);
@@ -230,7 +277,7 @@ export const api = {
   }): Promise<{ success: boolean; user: User }> {
     const res = await fetch(`${API_BASE}/admin/users/update`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: buildMutationHeaders(),
       body: JSON.stringify(data),
     });
     return handleResponse(res);
@@ -239,7 +286,7 @@ export const api = {
   async deleteAdminUser(userId: string): Promise<{ success: boolean; message: string }> {
     const res = await fetch(`${API_BASE}/admin/users/delete`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: buildMutationHeaders(),
       body: JSON.stringify({ userId }),
     });
     return handleResponse(res);
@@ -258,7 +305,7 @@ export const api = {
   async updateSecuritySettings(settings: Partial<SecuritySettings>): Promise<{ success: boolean; settings: SecuritySettings }> {
     const res = await fetch(`${API_BASE}/admin/security`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: buildMutationHeaders(),
       body: JSON.stringify(settings),
     });
     return handleResponse(res);
@@ -272,7 +319,7 @@ export const api = {
   async updateSystemSettings(settings: Partial<SystemSettings>): Promise<{ success: boolean; settings: SystemSettings }> {
     const res = await fetch(`${API_BASE}/admin/settings`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: buildMutationHeaders(),
       body: JSON.stringify(settings),
     });
     return handleResponse(res);
@@ -291,7 +338,7 @@ export const api = {
   async addStock(stock: { symbol: string; companyName: string; price: number; availableQuantity: number }): Promise<{ success: boolean; message: string; stock: Stock }> {
     const res = await fetch(`${API_BASE}/admin/stocks/add`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: buildMutationHeaders(),
       body: JSON.stringify({
         symbol: stock.symbol,
         companyName: stock.companyName,
@@ -305,7 +352,7 @@ export const api = {
   async updateStock(stock: { symbol: string; companyName?: string; price?: number; availableQuantity?: number }): Promise<{ success: boolean; message: string; stock: Stock }> {
     const res = await fetch(`${API_BASE}/admin/stocks/update`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: buildMutationHeaders(),
       body: JSON.stringify({
         symbol: stock.symbol,
         companyName: stock.companyName,
@@ -319,14 +366,14 @@ export const api = {
   async deleteStock(symbol: string): Promise<{ success: boolean; message: string }> {
     const res = await fetch(`${API_BASE}/admin/stocks/delete`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: buildMutationHeaders(),
       body: JSON.stringify({ symbol }),
     });
     return handleResponse(res);
   },
 
   /**
-   * Retrieves live JDBC Database Health, Driver metadata, and table records count (Review 2).
+   * Retrieves live JDBC Database Health, Driver metadata, and table records count.
    */
   async getDbHealth(): Promise<import('../types').DatabaseHealth> {
     const res = await fetch(`${API_BASE}/db/health`);
@@ -348,7 +395,7 @@ export const api = {
   async toggleWatchlist(symbol: string, userId?: string, action: 'add' | 'remove' | 'toggle' = 'toggle'): Promise<{ success: boolean; watchlist: string[] }> {
     const res = await fetch(`${API_BASE}/watchlist`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: buildMutationHeaders(),
       body: JSON.stringify({ symbol, userId, action }),
     });
     return handleResponse(res);

@@ -2,7 +2,9 @@ package dao;
 
 import model.*;
 import util.DBConnection;
+import util.MoneyUtil;
 
+import java.math.BigDecimal;
 import java.sql.*;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -12,8 +14,7 @@ import java.util.Set;
 
 /**
  * Data Access Object for User entities.
- * Executes real JDBC CRUD operations using PreparedStatement and ResultSet.
- * Fulfills Database Integration & DAO architecture requirements for GUVI Evaluation.
+ * Executes parameterized JDBC CRUD operations, BigDecimal balance updates, and row locking.
  */
 public class UserDAO implements UserDAOInterface {
 
@@ -31,8 +32,18 @@ public class UserDAO implements UserDAOInterface {
 
     @Override
     public User findById(Connection conn, String userId) throws SQLException {
+        return findByIdInternal(conn, userId, false);
+    }
+
+    @Override
+    public User findByIdForUpdate(Connection conn, String userId) throws SQLException {
+        return findByIdInternal(conn, userId, true);
+    }
+
+    private User findByIdInternal(Connection conn, String userId, boolean forUpdate) throws SQLException {
         if (userId == null || userId.trim().isEmpty()) return null;
-        String sql = "SELECT " + SELECT_COLUMNS + " FROM users WHERE LOWER(user_id) = LOWER(?)";
+        String sql = "SELECT " + SELECT_COLUMNS + " FROM users WHERE LOWER(user_id) = LOWER(?)"
+                + (forUpdate && DBConnection.isMySQL() ? " FOR UPDATE" : "");
         try (PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setString(1, userId.trim());
             try (ResultSet rs = ps.executeQuery()) {
@@ -110,7 +121,7 @@ public class UserDAO implements UserDAOInterface {
             ps.setString(3, user.getEmail());
             ps.setString(4, user.getPassword());
             ps.setString(5, user.getRole().name());
-            ps.setDouble(6, user.getBalance());
+            ps.setBigDecimal(6, MoneyUtil.of(user.getBalance()));
             if (user instanceof Admin) {
                 ps.setString(7, ((Admin) user).getDepartment());
                 ps.setInt(8, 1);
@@ -148,7 +159,7 @@ public class UserDAO implements UserDAOInterface {
             ps.setString(2, user.getEmail());
             ps.setString(3, user.getPassword());
             ps.setString(4, user.getRole().name());
-            ps.setDouble(5, user.getBalance());
+            ps.setBigDecimal(5, MoneyUtil.of(user.getBalance()));
             if (user instanceof Admin) {
                 ps.setString(6, ((Admin) user).getDepartment());
                 ps.setInt(7, 1);
@@ -183,9 +194,13 @@ public class UserDAO implements UserDAOInterface {
 
     @Override
     public boolean updateBalance(Connection conn, String userId, double newBalance) throws SQLException {
+        BigDecimal rounded = MoneyUtil.of(newBalance);
+        if (rounded.compareTo(BigDecimal.ZERO) < 0) {
+            return false;
+        }
         String sql = "UPDATE users SET balance = ? WHERE user_id = ?";
         try (PreparedStatement ps = conn.prepareStatement(sql)) {
-            ps.setDouble(1, Math.round(newBalance * 100.0) / 100.0);
+            ps.setBigDecimal(1, rounded);
             ps.setString(2, userId);
             return ps.executeUpdate() > 0;
         }
@@ -195,6 +210,30 @@ public class UserDAO implements UserDAOInterface {
     public boolean updateBalance(String userId, double newBalance) throws SQLException {
         try (Connection conn = DBConnection.getConnection()) {
             return updateBalance(conn, userId, newBalance);
+        }
+    }
+
+    @Override
+    public boolean adjustBalanceAtomically(Connection conn, String userId, BigDecimal delta, BigDecimal requiredMinBalance) throws SQLException {
+        if (userId == null || delta == null) return false;
+        BigDecimal scaledDelta = MoneyUtil.round(delta);
+        if (requiredMinBalance != null) {
+            BigDecimal scaledReq = MoneyUtil.round(requiredMinBalance);
+            String sql = "UPDATE users SET balance = ROUND(balance + ?, 2) WHERE user_id = ? AND balance >= ?";
+            try (PreparedStatement ps = conn.prepareStatement(sql)) {
+                ps.setBigDecimal(1, scaledDelta);
+                ps.setString(2, userId);
+                ps.setBigDecimal(3, scaledReq);
+                return ps.executeUpdate() > 0;
+            }
+        } else {
+            String sql = "UPDATE users SET balance = ROUND(balance + ?, 2) WHERE user_id = ? AND (balance + ?) >= 0";
+            try (PreparedStatement ps = conn.prepareStatement(sql)) {
+                ps.setBigDecimal(1, scaledDelta);
+                ps.setString(2, userId);
+                ps.setBigDecimal(3, scaledDelta);
+                return ps.executeUpdate() > 0;
+            }
         }
     }
 
@@ -251,7 +290,8 @@ public class UserDAO implements UserDAOInterface {
         String email = rs.getString("email");
         String password = rs.getString("password");
         String roleStr = rs.getString("role");
-        double balance = rs.getDouble("balance");
+        BigDecimal balDec = rs.getBigDecimal("balance");
+        double balance = balDec != null ? MoneyUtil.round(balDec).doubleValue() : 0.0;
         String department = rs.getString("department");
 
         boolean emailAlerts = true;

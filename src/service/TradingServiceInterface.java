@@ -10,8 +10,7 @@ import java.util.List;
 
 /**
  * Interface defining contract for Stock Trading Business Logic.
- * Implements high-level Buy/Sell workflows with ACID JDBC transaction semantics.
- * Fulfills Core Java Interfaces requirement for GUVI Evaluation.
+ * Implements high-level Buy/Sell workflows with ACID JDBC transaction semantics and idempotency.
  */
 public interface TradingServiceInterface {
     Trade executeBuy(String traderId, String symbol, int quantity)
@@ -24,7 +23,15 @@ public interface TradingServiceInterface {
             throws InsufficientBalanceException, InsufficientStockException,
                    InvalidStockException, InvalidTransactionException, SQLException;
 
+    Transaction executeBuyTransaction(String traderId, String symbol, int quantity, String idempotencyKey)
+            throws InsufficientBalanceException, InsufficientStockException,
+                   InvalidStockException, InvalidTransactionException, SQLException;
+
     Transaction executeSellTransaction(String traderId, String symbol, int quantity)
+            throws InsufficientHoldingsException, InvalidStockException,
+                   InvalidTransactionException, SQLException;
+
+    Transaction executeSellTransaction(String traderId, String symbol, int quantity, String idempotencyKey)
             throws InsufficientHoldingsException, InvalidStockException,
                    InvalidTransactionException, SQLException;
 

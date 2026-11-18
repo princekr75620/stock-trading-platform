@@ -68,8 +68,9 @@ public class UpdateStockServlet extends BaseServlet {
             sendJsonResponse(response, HttpServletResponse.SC_BAD_REQUEST,
                     "{\"success\":false,\"error\":\"Invalid numeric value provided.\"}");
         } catch (Exception e) {
+            System.err.println("[UpdateStockServlet] Unexpected error: " + e.getMessage());
             sendJsonResponse(response, HttpServletResponse.SC_INTERNAL_SERVER_ERROR,
-                    String.format("{\"success\":false,\"error\":\"%s\"}", JsonHelper.escape(e.getMessage())));
+                    "{\"success\":false,\"error\":\"Internal server error updating stock.\"}");
         }
     }
 }

@@ -9,9 +9,8 @@ import javax.servlet.http.HttpServletResponse;
 import java.io.IOException;
 
 /**
- * Servlet providing the currently authenticated user identity and role
- * directly from the server-side HttpSession context.
- * Replaces client-side localStorage trust with server-authoritative session validation.
+ * Servlet providing the currently authenticated user identity, role, and CSRF token
+ * directly from the server-side HttpSession context and authoritative database record.
  */
 public class AuthSessionServlet extends BaseServlet {
     private static final long serialVersionUID = 1L;
@@ -44,8 +43,10 @@ public class AuthSessionServlet extends BaseServlet {
             }
         }
 
-        // Return authoritative user details from database
-        String json = String.format("{\"authenticated\":true,\"user\":%s}", JsonHelper.userToJson(freshUser));
+        String csrfToken = getCsrfToken(request);
+        String json = String.format("{\"authenticated\":true,\"user\":%s,\"csrfToken\":\"%s\"}",
+                JsonHelper.userToJson(freshUser),
+                JsonHelper.escape(csrfToken));
         sendJsonResponse(response, HttpServletResponse.SC_OK, json);
     }
 }

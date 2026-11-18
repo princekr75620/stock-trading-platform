@@ -70,15 +70,14 @@ public class NotificationServlet extends BaseServlet {
             requestedUserId = request.getParameter("userId");
         }
 
-        String targetUserId = (requestedUserId != null && !requestedUserId.trim().isEmpty())
-                ? requestedUserId.trim()
-                : sessionUser.getUserId();
-
-        if (!ensureOwnerOrAdmin(request, response, targetUserId)) {
+        if (requestedUserId != null && !requestedUserId.trim().isEmpty()
+                && !sessionUser.getUserId().equalsIgnoreCase(requestedUserId.trim())) {
+            sendJsonResponse(response, HttpServletResponse.SC_FORBIDDEN,
+                    "{\"success\":false,\"error\":\"Access denied: Cannot modify notifications for another user.\"}");
             return;
         }
 
-        notificationService.markAllAsRead(targetUserId);
+        notificationService.markAllAsRead(sessionUser.getUserId());
         sendJsonResponse(response, HttpServletResponse.SC_OK, "{\"success\":true}");
     }
 }

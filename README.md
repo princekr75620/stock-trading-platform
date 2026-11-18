@@ -41,7 +41,7 @@ The **Java Web-Based Indian Stock Trading Platform** (*Bharat Equities Exchange*
 
 | Evaluation Criteria | Maximum Marks | Implementation Details & Proof Points in Codebase |
 |---|:---:|---|
-| **Code Quality & Testing** | **10 Marks** | • Modular separation: Model, DAO, Service, Servlet, Filter, Util, Server.<br>• **110/110** passing automated Java unit, DB, & HTTP E2E integration tests (`test.AllTestsRunner`).<br>• BCrypt password hashing (`$2a$12$`) with isolated `$LEGACY$`-only conditional migration (`src/util/PasswordHasher.java`).<br>• Session fixation defense, strict RBAC & cross-tenant ownership checks (`src/filter/AuthenticationFilter.java` + servlets).<br>• Server-side session verification via `/api/auth/session` & public admin escalation prevention.<br>• Parameterized queries (`PreparedStatement`) eliminating SQL injection.<br>• Atomic ACID transactions with `conn.setAutoCommit(false)`, `commit()`, and `rollback()`. |
+| **Code Quality & Testing** | **10 Marks** | • Modular separation: Model, DAO, Service, Servlet, Filter, Util, Server.<br>• **141/141** passing automated Java unit, security, DB, concurrency, & HTTP E2E integration tests (`test.AllTestsRunner`).<br>• BCrypt password hashing (`$2a$12$`) with isolated `$LEGACY$`-only conditional migration (`src/util/PasswordHasher.java`).<br>• Strict session-bound CSRF token + Origin/Referer verification, session fixation defense, inactivity timeout, strict RBAC & cross-tenant ownership checks (`src/filter/AuthenticationFilter.java` + servlets).<br>• Server-side session verification via `/api/auth/session` & public admin escalation prevention.<br>• `BigDecimal` financial precision (`MoneyUtil`), `Idempotency-Key` order deduplication, parameterized SQL (`PreparedStatement`), and atomic ACID transactions (`conn.setAutoCommit(false)`, `commit()`, `rollback()`). |
 | **Teamwork & Collaboration** | **5 Marks** | • Standardized Git feature-branching workflow (`feature/*`, `bugfix/*`).<br>• Pull Request template and code review checklist.<br>• Documented team role placeholders (Backend Lead, Database Architect, Frontend Lead, QA Engineer).<br>• Clean, self-contained build scripts (`compile.sh`, `run.sh`, `pom.xml`, `package.json`).<br>• Zero-configuration SQLite onboarding for new teammates and evaluators. |
 | **Innovation / Extra Effort** | **2 Marks** | • **Interactive Stock Watchlist**: Database-persisted multi-user watchlist with star toggle and filtered views.<br>• **Live JDBC Database Health Modal**: Real-time diagnostic inspector displaying active database engine (SQLite or MySQL), JDBC driver, connection status, table record counts, and schema verification.<br>• **Fee Breakdown Order Ticket**: Instant calculation of SEBI turnover fees, exchange turnover charges, and brokerage.<br>• **Dual JDBC Driver Support**: Embedded SQLite default (`data/stock_trading.db`) with explicit `DB_TYPE=mysql` switchability. |
 
@@ -130,12 +130,12 @@ The project strictly adheres to the **Model-View-Controller (MVC)** and **Data A
     ├── server/                           # Embedded Java HTTP Server Engine
     │   ├── TradingPlatformHttpServer.java# Standalone HTTP Server hosting all Servlets (Port 8765)
     │   └── ServletBridge.java            # HTTP Request/Response adapter with segment-boundary path matching
-    ├── test/                             # Automated Test Suites (110 Tests Total)
-    │   ├── TradingServiceTest.java       # Order validation and business rules (6 tests)
-    │   ├── PortfolioCalculationTest.java # Weighted average price & P&L formulas (4 tests)
-    │   ├── SecurityAndAuthTest.java      # BCrypt, $LEGACY$ vs plaintext rejection, lockout, RBAC (36 tests)
-    │   ├── DatabaseAndIntegrationTest.java# 8 Review 2 Criteria: Connection, CRUD, TX Rollback (33 tests)
-    │   ├── EndToEndHttpIntegrationTest.java # Live HttpServer + ServletBridge + SQLite persistence across restarts (31 tests)
+    ├── test/                             # Automated Test Suites (141 Tests Total)
+    │   ├── TradingServiceTest.java       # Order validation, BigDecimal precision & concurrency (15 tests)
+    │   ├── PortfolioCalculationTest.java # Weighted average price & BigDecimal P&L formulas (5 tests)
+    │   ├── SecurityAndAuthTest.java      # BCrypt, $LEGACY$ vs plaintext rejection, CSRF, session & RBAC (45 tests)
+    │   ├── DatabaseAndIntegrationTest.java# JDBC Connection, CRUD, FK/SQL guards & TX Rollback (37 tests)
+    │   ├── EndToEndHttpIntegrationTest.java # Live HttpServer + ServletBridge + CSRF + Idempotency + SQLite E2E (39 tests)
     │   └── AllTestsRunner.java           # Unified CLI Test Suite Runner
     └── components/                       # Frontend Presentation Layer (React 19 / TypeScript)
         ├── Navbar.tsx                    # Header with market ticker, DB Status & Rubric buttons
@@ -327,8 +327,8 @@ The user interface was engineered to provide a clean, institutional-grade tradin
 
 ## 7. Code Quality, Testing & Security Hardening (10 Marks)
  
-### Automated Test Suite Execution Results (77/77 Tests Passed)
-The test runner (`src/test/AllTestsRunner.java`) executes 4 comprehensive test suites covering all criteria mandated for Reviews 1 & 2:
+### Automated Test Suite Execution Results (141/141 Tests Passed across 5 Suites)
+The test runner (`src/test/AllTestsRunner.java`) executes 5 comprehensive test suites (**15/15** `TradingServiceTest`, **5/5** `PortfolioCalculationTest`, **45/45** `SecurityAndAuthTest`, **37/37** `DatabaseAndIntegrationTest`, and **39/39** `EndToEndHttpIntegrationTest` = **141/141 total**) covering security, concurrency, financial precision, JDBC ACID integrity, and live HTTP E2E flows:
 
 ```
 ===============================================================
@@ -468,7 +468,7 @@ DatabaseAndIntegrationTest Results: 33/33 Passed.
   - `feature/bcrypt-security-hardening`: jBCrypt migration and session filter.
 - **Pull Request Checklist**:
   1. Does `compile.sh` / `npm run build` compile cleanly with zero errors?
-  2. Do all 110 tests in `test.AllTestsRunner` pass?
+  2. Do all 141 tests in `test.AllTestsRunner` pass?
   3. Are all database queries parameterized via `PreparedStatement`?
   4. Are passwords hashed with BCrypt and credentials loaded from environment variables?
   5. Does the frontend build without TypeScript errors (`npm run lint`)?
@@ -510,7 +510,7 @@ npm run build
 npm run build:war
 ```
 
-### 2. Run Java Unit, DB & HTTP E2E Test Suites (110 Tests)
+### 2. Run Java Unit, Security, DB & HTTP E2E Test Suites (141 Tests)
 ```bash
 # Execute the comprehensive test runner
 npm test
@@ -553,4 +553,4 @@ When presenting to the faculty panel during Review 2, structure your walkthrough
    - Execute a live BUY/SELL order and verify updated balance, portfolio holdings, and transaction audit log survive server restarts.
    - Demonstrate the **Watchlist star toggle** and cross-tenant/RBAC protections.
 5. **Code Quality, Security & Test Evidence (30 secs)**:
-   - Show all **110 automated tests** passing across 5 suites in `test.AllTestsRunner`, Damien Miller jBCrypt password hashing, isolated `$LEGACY$` conditional migration, session fixation defense, and `AuthenticationFilter` RBAC enforcement.
+   - Show all **141 automated tests** passing across 5 suites in `test.AllTestsRunner`, Damien Miller jBCrypt password hashing, isolated `$LEGACY$` conditional migration, strict CSRF & session fixation defense, `BigDecimal` precision, `Idempotency-Key` deduplication, and `AuthenticationFilter` RBAC enforcement.

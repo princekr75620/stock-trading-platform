@@ -58,8 +58,9 @@ public class WatchlistServlet extends BaseServlet {
             sb.append("]}");
             sendJsonResponse(response, HttpServletResponse.SC_OK, sb.toString());
         } catch (SQLException e) {
+            System.err.println("[WatchlistServlet] DB error reading watchlist: " + e.getMessage());
             sendJsonResponse(response, HttpServletResponse.SC_INTERNAL_SERVER_ERROR,
-                    String.format("{\"success\":false,\"error\":\"Database error: %s\"}", JsonHelper.escape(e.getMessage())));
+                    "{\"success\":false,\"error\":\"Internal server error loading watchlist.\"}");
         }
     }
 
@@ -118,8 +119,9 @@ public class WatchlistServlet extends BaseServlet {
             sb.append("]}");
             sendJsonResponse(response, HttpServletResponse.SC_OK, sb.toString());
         } catch (SQLException e) {
+            System.err.println("[WatchlistServlet] DB error updating watchlist: " + e.getMessage());
             sendJsonResponse(response, HttpServletResponse.SC_INTERNAL_SERVER_ERROR,
-                    String.format("{\"success\":false,\"error\":\"Database error: %s\"}", JsonHelper.escape(e.getMessage())));
+                    "{\"success\":false,\"error\":\"Internal server error updating watchlist.\"}");
         }
     }
 }

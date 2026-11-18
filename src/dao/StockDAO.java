@@ -2,18 +2,16 @@ package dao;
 
 import model.Stock;
 import util.DBConnection;
+import util.MoneyUtil;
 
+import java.math.BigDecimal;
 import java.sql.*;
 import java.util.*;
 
 /**
  * Data Access Object for Indian Stock entities.
- * Executes real JDBC CRUD operations using PreparedStatement and ResultSet.
- * Features:
- * - Single and Batch inserts (JDBC addBatch/executeBatch)
- * - Pagination & Search by Symbol or Company Name
- * - Atomic quantity updates for BUY and SELL
- * Fulfills Database Integration & Collections/Generics requirements for GUVI Evaluation.
+ * Supports SQLite and MySQL dialects, BigDecimal monetary reads/writes,
+ * pessimistic row locking on MySQL, and atomic stock float updates.
  */
 public class StockDAO implements StockDAOInterface {
 
@@ -30,8 +28,18 @@ public class StockDAO implements StockDAOInterface {
 
     @Override
     public Stock findBySymbol(Connection conn, String symbol) throws SQLException {
+        return findBySymbolInternal(conn, symbol, false);
+    }
+
+    @Override
+    public Stock findBySymbolForUpdate(Connection conn, String symbol) throws SQLException {
+        return findBySymbolInternal(conn, symbol, true);
+    }
+
+    private Stock findBySymbolInternal(Connection conn, String symbol, boolean forUpdate) throws SQLException {
         if (symbol == null) return null;
-        String sql = "SELECT " + SELECT_FIELDS + " FROM stocks WHERE symbol = ?";
+        String sql = "SELECT " + SELECT_FIELDS + " FROM stocks WHERE symbol = ?"
+                + (forUpdate && DBConnection.isMySQL() ? " FOR UPDATE" : "");
         try (PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setString(1, symbol.toUpperCase().trim());
             try (ResultSet rs = ps.executeQuery()) {
@@ -140,26 +148,38 @@ public class StockDAO implements StockDAOInterface {
     @Override
     public int insertBatch(List<Stock> stocks) throws SQLException {
         if (stocks == null || stocks.isEmpty()) return 0;
-        String sql = "INSERT OR REPLACE INTO stocks (symbol, company_name, exchange, price, available_quantity, status, previous_price, day_high, day_low, volume_traded) " +
-                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+        String sql;
+        if (DBConnection.isMySQL()) {
+            sql = "INSERT INTO stocks (symbol, company_name, exchange, price, available_quantity, status, previous_price, day_high, day_low, volume_traded) " +
+                  "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) " +
+                  "ON DUPLICATE KEY UPDATE company_name=VALUES(company_name), exchange=VALUES(exchange), price=VALUES(price), " +
+                  "available_quantity=VALUES(available_quantity), status=VALUES(status), previous_price=VALUES(previous_price), " +
+                  "day_high=VALUES(day_high), day_low=VALUES(day_low), volume_traded=VALUES(volume_traded)";
+        } else {
+            sql = "INSERT INTO stocks (symbol, company_name, exchange, price, available_quantity, status, previous_price, day_high, day_low, volume_traded) " +
+                  "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) " +
+                  "ON CONFLICT(symbol) DO UPDATE SET company_name=excluded.company_name, exchange=excluded.exchange, price=excluded.price, " +
+                  "available_quantity=excluded.available_quantity, status=excluded.status, previous_price=excluded.previous_price, " +
+                  "day_high=excluded.day_high, day_low=excluded.day_low, volume_traded=excluded.volume_traded";
+        }
 
         try (Connection conn = DBConnection.getConnection()) {
             boolean autoCommitOriginal = conn.getAutoCommit();
-            conn.setAutoCommit(false); // Begin JDBC Batch Transaction
+            conn.setAutoCommit(false);
             try (PreparedStatement ps = conn.prepareStatement(sql)) {
                 for (Stock stock : stocks) {
                     populateStockPreparedStatement(ps, stock);
                     ps.addBatch();
                 }
                 int[] results = ps.executeBatch();
-                conn.commit(); // Commit batch transaction
+                conn.commit();
                 int count = 0;
                 for (int r : results) {
                     if (r >= 0 || r == Statement.SUCCESS_NO_INFO) count++;
                 }
                 return count;
             } catch (SQLException e) {
-                conn.rollback(); // Rollback on failure
+                conn.rollback();
                 throw e;
             } finally {
                 conn.setAutoCommit(autoCommitOriginal);
@@ -171,12 +191,15 @@ public class StockDAO implements StockDAOInterface {
         ps.setString(1, stock.getSymbol().toUpperCase().trim());
         ps.setString(2, stock.getName());
         ps.setString(3, stock.getExchange());
-        ps.setDouble(4, stock.getCurrentPrice());
+        ps.setBigDecimal(4, MoneyUtil.of(stock.getCurrentPrice()));
         ps.setInt(5, stock.getAvailableQuantity());
         ps.setString(6, stock.getStatus());
-        ps.setDouble(7, stock.getPreviousPrice() > 0 ? stock.getPreviousPrice() : stock.getCurrentPrice());
-        ps.setDouble(8, stock.getDayHigh() > 0 ? stock.getDayHigh() : stock.getCurrentPrice());
-        ps.setDouble(9, stock.getDayLow() > 0 ? stock.getDayLow() : stock.getCurrentPrice());
+        double prev = stock.getPreviousPrice() > 0 ? stock.getPreviousPrice() : stock.getCurrentPrice();
+        double high = stock.getDayHigh() > 0 ? stock.getDayHigh() : stock.getCurrentPrice();
+        double low = stock.getDayLow() > 0 ? stock.getDayLow() : stock.getCurrentPrice();
+        ps.setBigDecimal(7, MoneyUtil.of(prev));
+        ps.setBigDecimal(8, MoneyUtil.of(high));
+        ps.setBigDecimal(9, MoneyUtil.of(low));
         ps.setLong(10, stock.getVolumeTraded());
     }
 
@@ -187,12 +210,12 @@ public class StockDAO implements StockDAOInterface {
              PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setString(1, stock.getName());
             ps.setString(2, stock.getExchange());
-            ps.setDouble(3, stock.getCurrentPrice());
+            ps.setBigDecimal(3, MoneyUtil.of(stock.getCurrentPrice()));
             ps.setInt(4, stock.getAvailableQuantity());
             ps.setString(5, stock.getStatus());
-            ps.setDouble(6, stock.getPreviousPrice());
-            ps.setDouble(7, stock.getDayHigh());
-            ps.setDouble(8, stock.getDayLow());
+            ps.setBigDecimal(6, MoneyUtil.of(stock.getPreviousPrice()));
+            ps.setBigDecimal(7, MoneyUtil.of(stock.getDayHigh()));
+            ps.setBigDecimal(8, MoneyUtil.of(stock.getDayLow()));
             ps.setLong(9, stock.getVolumeTraded());
             ps.setString(10, stock.getSymbol().toUpperCase().trim());
             return ps.executeUpdate() > 0;
@@ -202,8 +225,8 @@ public class StockDAO implements StockDAOInterface {
     @Override
     public boolean updateQuantityAndVolume(Connection conn, String symbol, int quantityDelta, boolean isBuy) throws SQLException {
         String sql = isBuy ?
-                "UPDATE stocks SET available_quantity = available_quantity - ?, volume_traded = volume_traded + ? WHERE symbol = ? AND available_quantity >= ?" :
-                "UPDATE stocks SET available_quantity = available_quantity + ?, volume_traded = volume_traded + ? WHERE symbol = ?";
+                "UPDATE stocks SET available_quantity = available_quantity - ?, volume_traded = volume_traded + ? WHERE symbol = ? AND status = 'ACTIVE' AND available_quantity >= ?" :
+                "UPDATE stocks SET available_quantity = available_quantity + ?, volume_traded = volume_traded + ? WHERE symbol = ? AND status = 'ACTIVE'";
 
         try (PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setInt(1, quantityDelta);
@@ -236,7 +259,8 @@ public class StockDAO implements StockDAOInterface {
             if (exchange == null) exchange = "NSE";
         } catch (SQLException ignored) {}
 
-        double price = rs.getDouble("price");
+        BigDecimal priceDec = rs.getBigDecimal("price");
+        double price = priceDec != null ? MoneyUtil.round(priceDec).doubleValue() : 0.0;
         int availableQty = rs.getInt("available_quantity");
         String status = "ACTIVE";
         try {
@@ -244,15 +268,18 @@ public class StockDAO implements StockDAOInterface {
             if (status == null) status = "ACTIVE";
         } catch (SQLException ignored) {}
 
-        double prevPrice = rs.getDouble("previous_price");
-        double dayHigh = rs.getDouble("day_high");
-        double dayLow = rs.getDouble("day_low");
+        BigDecimal prevDec = rs.getBigDecimal("previous_price");
+        BigDecimal highDec = rs.getBigDecimal("day_high");
+        BigDecimal lowDec = rs.getBigDecimal("day_low");
+        double prevPrice = prevDec != null ? MoneyUtil.round(prevDec).doubleValue() : price;
+        double dayHigh = (highDec != null && highDec.doubleValue() > 0) ? MoneyUtil.round(highDec).doubleValue() : price;
+        double dayLow = (lowDec != null && lowDec.doubleValue() > 0) ? MoneyUtil.round(lowDec).doubleValue() : price;
         long volume = rs.getLong("volume_traded");
 
         Stock stock = new Stock(id, symbol, name, exchange, price, availableQty, status);
         stock.setPreviousPrice(prevPrice);
-        stock.setDayHigh(dayHigh > 0 ? dayHigh : price);
-        stock.setDayLow(dayLow > 0 ? dayLow : price);
+        stock.setDayHigh(dayHigh);
+        stock.setDayLow(dayLow);
         stock.setVolumeTraded(volume);
         return stock;
     }

@@ -1,117 +1,140 @@
 -- ==============================================================================
--- GUVI COLLEGE EVALUATION: INDIAN STOCK TRADING PLATFORM DATABASE SCHEMA (MySQL)
--- Architecture: Frontend -> Servlets -> Service -> DAO -> JDBC -> MySQL
--- Database: stock_trading
+-- INDIAN STOCK TRADING PLATFORM — NON-DESTRUCTIVE PRODUCTION DATABASE SCHEMA (MySQL 8+)
+-- Architecture: Express Gateway -> Java HttpServer/Servlets -> Service -> DAO -> JDBC
+-- Note: This script NEVER drops existing tables or user data.
+-- For destructive development reset + demo accounts, see scripts/dev_reset.sql.
 -- ==============================================================================
 
 CREATE DATABASE IF NOT EXISTS stock_trading;
 USE stock_trading;
 
-DROP TABLE IF EXISTS watchlist;
-DROP TABLE IF EXISTS transactions;
-DROP TABLE IF EXISTS portfolio;
-DROP TABLE IF EXISTS stocks;
-DROP TABLE IF EXISTS users;
+-- ------------------------------------------------------------------------------
+-- 0. SCHEMA MIGRATIONS TRACKING TABLE
+-- ------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    version VARCHAR(50) PRIMARY KEY,
+    description VARCHAR(255) NOT NULL,
+    applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ------------------------------------------------------------------------------
 -- 1. USERS TABLE
--- Stores Trader and Administrator credentials, roles, and INR balances.
--- Encapsulation: User, Trader, Admin
+-- Stores Trader and Administrator credentials, roles, and DECIMAL INR balances.
 -- ------------------------------------------------------------------------------
-CREATE TABLE users (
+CREATE TABLE IF NOT EXISTS users (
     id INT PRIMARY KEY AUTO_INCREMENT,
     user_id VARCHAR(50) UNIQUE NOT NULL,
     name VARCHAR(100) NOT NULL,
-    email VARCHAR(100) UNIQUE NOT NULL,
-    password VARCHAR(100) NOT NULL,
-    role VARCHAR(20) NOT NULL, -- 'TRADER' or 'ADMIN'
-    balance DOUBLE DEFAULT 50000.00,
+    email VARCHAR(150) UNIQUE NOT NULL,
+    password VARCHAR(255) NOT NULL,
+    role VARCHAR(20) NOT NULL,
+    balance DECIMAL(15, 2) NOT NULL DEFAULT 50000.00,
     department VARCHAR(100) DEFAULT NULL,
-    email_alerts_enabled BOOLEAN DEFAULT TRUE,
-    alert_threshold_percent DOUBLE DEFAULT 2.0,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    email_alerts_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    alert_threshold_percent DECIMAL(5, 2) NOT NULL DEFAULT 2.00,
+    must_change_password BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT chk_users_role CHECK (role IN ('TRADER', 'ADMIN')),
+    CONSTRAINT chk_users_balance CHECK (balance >= 0.00),
+    INDEX idx_users_role (role)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ------------------------------------------------------------------------------
 -- 2. STOCKS TABLE (Indian Equities: NSE / BSE)
--- Stores listed equities with real-time price quotes, available float, and exchange.
 -- ------------------------------------------------------------------------------
-CREATE TABLE stocks (
+CREATE TABLE IF NOT EXISTS stocks (
     id INT PRIMARY KEY AUTO_INCREMENT,
-    symbol VARCHAR(10) UNIQUE NOT NULL,
-    company_name VARCHAR(100) NOT NULL,
-    exchange VARCHAR(10) DEFAULT 'NSE', -- 'NSE' or 'BSE'
-    price DOUBLE NOT NULL,
+    symbol VARCHAR(20) UNIQUE NOT NULL,
+    company_name VARCHAR(150) NOT NULL,
+    exchange VARCHAR(10) NOT NULL DEFAULT 'NSE',
+    price DECIMAL(15, 2) NOT NULL,
     available_quantity INT NOT NULL,
-    status VARCHAR(20) DEFAULT 'ACTIVE', -- 'ACTIVE' or 'DISABLED'
-    previous_price DOUBLE DEFAULT 0.0,
-    day_high DOUBLE DEFAULT 0.0,
-    day_low DOUBLE DEFAULT 0.0,
-    volume_traded BIGINT DEFAULT 0
+    status VARCHAR(20) NOT NULL DEFAULT 'ACTIVE',
+    previous_price DECIMAL(15, 2) NOT NULL DEFAULT 0.00,
+    day_high DECIMAL(15, 2) NOT NULL DEFAULT 0.00,
+    day_low DECIMAL(15, 2) NOT NULL DEFAULT 0.00,
+    volume_traded BIGINT NOT NULL DEFAULT 0,
+    CONSTRAINT chk_stocks_price CHECK (price > 0.00),
+    CONSTRAINT chk_stocks_qty CHECK (available_quantity >= 0),
+    CONSTRAINT chk_stocks_status CHECK (status IN ('ACTIVE', 'HALTED', 'DISABLED')),
+    INDEX idx_stocks_exchange (exchange)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ------------------------------------------------------------------------------
 -- 3. PORTFOLIO TABLE
--- Tracks Trader holdings, share count, and weighted average cost basis (₹).
+-- One holding row per (user_id, symbol), weighted average cost in DECIMAL(15, 2).
 -- ------------------------------------------------------------------------------
-CREATE TABLE portfolio (
+CREATE TABLE IF NOT EXISTS portfolio (
     id INT PRIMARY KEY AUTO_INCREMENT,
     user_id VARCHAR(50) NOT NULL,
-    stock_id INT DEFAULT 0,
-    symbol VARCHAR(10) NOT NULL,
+    stock_id INT NOT NULL DEFAULT 0,
+    symbol VARCHAR(20) NOT NULL,
     quantity INT NOT NULL,
-    average_price DOUBLE NOT NULL,
-    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
+    average_price DECIMAL(15, 2) NOT NULL,
+    CONSTRAINT chk_portfolio_qty CHECK (quantity > 0),
+    CONSTRAINT chk_portfolio_avg CHECK (average_price >= 0.00),
+    CONSTRAINT fk_portfolio_user FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
     UNIQUE KEY uq_portfolio_user_symbol (user_id, symbol),
-    INDEX idx_user_symbol (user_id, symbol)
+    INDEX idx_portfolio_user (user_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ------------------------------------------------------------------------------
 -- 4. TRANSACTIONS TABLE
--- Auditable ledger of all BUY and SELL transactions executed on the exchange.
+-- Immutable audit ledger of BUY/SELL executions, fees, and total cash impact.
 -- ------------------------------------------------------------------------------
-CREATE TABLE transactions (
+CREATE TABLE IF NOT EXISTS transactions (
     id INT PRIMARY KEY AUTO_INCREMENT,
     user_id VARCHAR(50) NOT NULL,
-    stock_id INT DEFAULT 0,
-    symbol VARCHAR(10) NOT NULL,
-    transaction_type VARCHAR(10) NOT NULL, -- 'BUY' or 'SELL'
+    stock_id INT NOT NULL DEFAULT 0,
+    symbol VARCHAR(20) NOT NULL,
+    transaction_type VARCHAR(10) NOT NULL,
     quantity INT NOT NULL,
-    price DOUBLE NOT NULL,
-    total_amount DOUBLE NOT NULL,
-    transaction_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
+    price DECIMAL(15, 2) NOT NULL,
+    fee_amount DECIMAL(15, 2) NOT NULL DEFAULT 0.00,
+    total_amount DECIMAL(15, 2) NOT NULL,
+    idempotency_key VARCHAR(100) DEFAULT NULL,
+    transaction_date TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT chk_tx_type CHECK (transaction_type IN ('BUY', 'SELL')),
+    CONSTRAINT chk_tx_qty CHECK (quantity > 0),
+    CONSTRAINT chk_tx_price CHECK (price > 0.00),
+    CONSTRAINT chk_tx_total CHECK (total_amount >= 0.00),
+    CONSTRAINT fk_tx_user FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE RESTRICT,
+    UNIQUE KEY uq_tx_user_idempotency (user_id, idempotency_key),
     INDEX idx_user_tx (user_id, transaction_date)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ------------------------------------------------------------------------------
--- 5. WATCHLIST TABLE
--- Tracks user-specific watched stock symbols with unique user-symbol pairs.
+-- 5. TRADE IDEMPOTENCY TABLE
+-- Prevents accidental duplicate order execution across retries and concurrency.
 -- ------------------------------------------------------------------------------
-CREATE TABLE watchlist (
+CREATE TABLE IF NOT EXISTS trade_idempotency (
+    user_id VARCHAR(50) NOT NULL,
+    idempotency_key VARCHAR(100) NOT NULL,
+    transaction_id INT NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (user_id, idempotency_key),
+    CONSTRAINT fk_idemp_user FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
+    CONSTRAINT fk_idemp_tx FOREIGN KEY (transaction_id) REFERENCES transactions(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ------------------------------------------------------------------------------
+-- 6. WATCHLIST TABLE
+-- ------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS watchlist (
     id INT PRIMARY KEY AUTO_INCREMENT,
     user_id VARCHAR(50) NOT NULL,
-    symbol VARCHAR(10) NOT NULL,
-    added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    symbol VARCHAR(20) NOT NULL,
+    added_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE KEY uq_user_symbol (user_id, symbol),
-    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
+    CONSTRAINT fk_watchlist_user FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE,
     INDEX idx_user_watchlist (user_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
--- ==============================================================================
--- INITIAL SEED DATA (Authentic Indian Market Equities - NSE / BSE)
--- Note: DBConnection.seedInitialData() seeds users dynamically using
--- PasswordHasher.hashPassword() (BCrypt $2a$12$). Never insert plaintext passwords.
--- ==============================================================================
-
--- Seed Users (Admins and Traders with BCrypt $2a$12$ hashes: admin123 / trader123)
-INSERT INTO users (user_id, name, email, password, role, balance, department) VALUES
-('admin', 'Chief Risk Officer', 'admin@tradingplatform.internal', '$2a$12$7pxJbuVHljDPnxDXkjKn9ecECdeJIAnFJq97IYOCfTnbTriYsq8nS', 'ADMIN', 0.0, 'Enterprise Market Operations'),
-('trader1', 'Alexander Morgan', 'alex.morgan@quantcap.com', '$2a$12$86egunIjqDaU0ok3e6YvA.IfM/CWcmrP2awjWSuvwX6LqT290lvBK', 'TRADER', 45280.00, NULL),
-('trader2', 'Elena Rostova', 'elena.r@hedgealpha.io', '$2a$12$86egunIjqDaU0ok3e6YvA.IfM/CWcmrP2awjWSuvwX6LqT290lvBK', 'TRADER', 85600.00, NULL);
-
--- Seed Indian Equities (NIFTY 50 / NSE / BSE)
-INSERT INTO stocks (symbol, company_name, exchange, price, available_quantity, status, previous_price, day_high, day_low, volume_traded) VALUES
+-- ------------------------------------------------------------------------------
+-- NON-SENSITIVE REFERENCE EQUITY CATALOG (Safe for Production)
+-- Provision production admin user explicitly via ADMIN_BOOTSTRAP_USER/PASSWORD.
+-- ------------------------------------------------------------------------------
+INSERT IGNORE INTO stocks (symbol, company_name, exchange, price, available_quantity, status, previous_price, day_high, day_low, volume_traded) VALUES
 ('RELIANCE', 'Reliance Industries Limited', 'NSE', 2980.50, 50000, 'ACTIVE', 2950.00, 3010.00, 2945.00, 75000),
 ('TCS', 'Tata Consultancy Services Limited', 'NSE', 4245.00, 35000, 'ACTIVE', 4210.00, 4280.00, 4190.00, 42000),
 ('HDFCBANK', 'HDFC Bank Limited', 'NSE', 1652.80, 60000, 'ACTIVE', 1640.00, 1665.00, 1635.00, 88000),
@@ -130,23 +153,3 @@ INSERT INTO stocks (symbol, company_name, exchange, price, available_quantity, s
 ('WIPRO', 'Wipro Limited', 'NSE', 535.80, 40000, 'ACTIVE', 530.00, 542.00, 528.00, 45000),
 ('TATASTEEL', 'Tata Steel Limited', 'NSE', 154.60, 100000, 'ACTIVE', 152.00, 157.00, 151.00, 140000),
 ('VEDL', 'Vedanta Limited', 'BSE', 485.00, 50000, 'ACTIVE', 478.00, 492.00, 475.00, 65000);
-
--- Seed Initial Portfolios (Indian Equities in ₹)
-INSERT INTO portfolio (user_id, stock_id, symbol, quantity, average_price) VALUES
-('trader1', 1, 'RELIANCE', 20, 2900.00),
-('trader1', 2, 'TCS', 10, 4150.00),
-('trader1', 4, 'INFY', 25, 1850.00);
-
--- Seed Initial Transactions (Auditable Ledger)
-INSERT INTO transactions (user_id, stock_id, symbol, transaction_type, quantity, price, total_amount, transaction_date) VALUES
-('trader1', 1, 'RELIANCE', 'BUY', 20, 2900.00, 58000.00, DATE_SUB(NOW(), INTERVAL 3 DAY)),
-('trader1', 2, 'TCS', 'BUY', 10, 4150.00, 41500.00, DATE_SUB(NOW(), INTERVAL 2 DAY)),
-('trader1', 4, 'INFY', 'BUY', 25, 1850.00, 46250.00, DATE_SUB(NOW(), INTERVAL 1 DAY));
-
--- Seed Default Trader Watchlists
-INSERT INTO watchlist (user_id, symbol) VALUES
-('trader1', 'RELIANCE'),
-('trader1', 'TCS'),
-('trader1', 'INFY'),
-('trader2', 'TATAMOTORS'),
-('trader2', 'SBIN');

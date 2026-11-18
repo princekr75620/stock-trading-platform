@@ -33,7 +33,7 @@ public class DatabaseHealthServlet extends BaseServlet {
         sb.append("\"driverName\":\"").append(JsonHelper.escape(String.valueOf(status.getOrDefault("driverName", "Unknown")))).append("\",");
         sb.append("\"driverVersion\":\"").append(JsonHelper.escape(String.valueOf(status.getOrDefault("driverVersion", "Unknown")))).append("\",");
         sb.append("\"engineType\":\"").append(JsonHelper.escape(String.valueOf(status.getOrDefault("engineType", "SQLite (Embedded Relational)")))).append("\",");
-        sb.append("\"jdbcUrl\":\"").append(JsonHelper.escape(String.valueOf(status.getOrDefault("jdbcUrl", "jdbc:sqlite:data/stock_trading.db")))).append("\",");
+        sb.append("\"jdbcUrl\":\"").append(JsonHelper.escape(String.valueOf(status.getOrDefault("jdbcUrl", "jdbc:sqlite:[embedded-storage]")))).append("\",");
 
         Object tableCountsObj = status.get("tableCounts");
         if (tableCountsObj instanceof Map) {

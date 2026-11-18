@@ -2,15 +2,16 @@ package dao;
 
 import model.Portfolio;
 import util.DBConnection;
+import util.MoneyUtil;
 
+import java.math.BigDecimal;
 import java.sql.*;
 import java.util.HashMap;
 import java.util.Map;
 
 /**
  * Data Access Object for Trader Portfolio records.
- * Manages SQL portfolio table with real PreparedStatement executions.
- * Fulfills Database Integration & Collections (Map<String, Integer>) for GUVI Evaluation.
+ * Uses BigDecimal weighted average calculations, MySQL row locking, and atomic conditional updates.
  */
 public class PortfolioDAO implements PortfolioDAOInterface {
 
@@ -26,7 +27,8 @@ public class PortfolioDAO implements PortfolioDAOInterface {
                 while (rs.next()) {
                     String symbol = rs.getString("symbol");
                     int qty = rs.getInt("quantity");
-                    double avgPrice = rs.getDouble("average_price");
+                    BigDecimal avgDec = rs.getBigDecimal("average_price");
+                    double avgPrice = avgDec != null ? MoneyUtil.round(avgDec).doubleValue() : 0.0;
                     portfolio.recordBuy(symbol, qty, avgPrice);
                 }
             }
@@ -45,7 +47,8 @@ public class PortfolioDAO implements PortfolioDAOInterface {
                 String userId = rs.getString("user_id");
                 String symbol = rs.getString("symbol");
                 int qty = rs.getInt("quantity");
-                double avgPrice = rs.getDouble("average_price");
+                BigDecimal avgDec = rs.getBigDecimal("average_price");
+                double avgPrice = avgDec != null ? MoneyUtil.round(avgDec).doubleValue() : 0.0;
                 Portfolio p = result.computeIfAbsent(userId, Portfolio::new);
                 p.recordBuy(symbol, qty, avgPrice);
             }
@@ -78,11 +81,14 @@ public class PortfolioDAO implements PortfolioDAOInterface {
 
     @Override
     public boolean recordBuy(Connection conn, String userId, int stockId, String symbol, int quantity, double price) throws SQLException {
+        if (userId == null || userId.trim().isEmpty() || symbol == null || symbol.trim().isEmpty() || quantity <= 0 || price <= 0) {
+            return false;
+        }
         symbol = symbol.toUpperCase().trim();
-        // Check if row already exists
-        String checkSql = "SELECT id, quantity, average_price FROM portfolio WHERE user_id = ? AND symbol = ?";
+        String checkSql = "SELECT id, quantity, average_price FROM portfolio WHERE user_id = ? AND symbol = ?"
+                + (DBConnection.isMySQL() ? " FOR UPDATE" : "");
         int existingQty = 0;
-        double existingAvgPrice = 0.0;
+        BigDecimal existingAvgPrice = MoneyUtil.ZERO;
         boolean exists = false;
 
         try (PreparedStatement ps = conn.prepareStatement(checkSql)) {
@@ -92,20 +98,23 @@ public class PortfolioDAO implements PortfolioDAOInterface {
                 if (rs.next()) {
                     exists = true;
                     existingQty = rs.getInt("quantity");
-                    existingAvgPrice = rs.getDouble("average_price");
+                    BigDecimal avgDec = rs.getBigDecimal("average_price");
+                    existingAvgPrice = avgDec != null ? MoneyUtil.round(avgDec) : MoneyUtil.ZERO;
                 }
             }
         }
 
+        BigDecimal buyPrice = MoneyUtil.of(price);
         if (exists) {
             int newTotalQty = existingQty + quantity;
-            double newAvgPrice = ((existingQty * existingAvgPrice) + (quantity * price)) / newTotalQty;
-            String updateSql = "UPDATE portfolio SET quantity = ?, average_price = ? WHERE user_id = ? AND symbol = ?";
+            BigDecimal newAvgPrice = MoneyUtil.calculateWeightedAveragePrice(existingQty, existingAvgPrice, quantity, buyPrice);
+            String updateSql = "UPDATE portfolio SET quantity = ?, average_price = ? WHERE user_id = ? AND symbol = ? AND quantity = ?";
             try (PreparedStatement ps = conn.prepareStatement(updateSql)) {
                 ps.setInt(1, newTotalQty);
-                ps.setDouble(2, Math.round(newAvgPrice * 100.0) / 100.0);
+                ps.setBigDecimal(2, newAvgPrice);
                 ps.setString(3, userId);
                 ps.setString(4, symbol);
+                ps.setInt(5, existingQty);
                 return ps.executeUpdate() > 0;
             }
         } else {
@@ -115,7 +124,7 @@ public class PortfolioDAO implements PortfolioDAOInterface {
                 ps.setInt(2, stockId);
                 ps.setString(3, symbol);
                 ps.setInt(4, quantity);
-                ps.setDouble(5, Math.round(price * 100.0) / 100.0);
+                ps.setBigDecimal(5, buyPrice);
                 return ps.executeUpdate() > 0;
             }
         }
@@ -124,7 +133,8 @@ public class PortfolioDAO implements PortfolioDAOInterface {
     @Override
     public boolean recordSell(Connection conn, String userId, String symbol, int quantity) throws SQLException {
         symbol = symbol.toUpperCase().trim();
-        String checkSql = "SELECT quantity FROM portfolio WHERE user_id = ? AND symbol = ?";
+        String checkSql = "SELECT quantity FROM portfolio WHERE user_id = ? AND symbol = ?"
+                + (DBConnection.isMySQL() ? " FOR UPDATE" : "");
         int existingQty = 0;
 
         try (PreparedStatement ps = conn.prepareStatement(checkSql)) {
@@ -142,20 +152,20 @@ public class PortfolioDAO implements PortfolioDAOInterface {
         if (existingQty < quantity) {
             return false;
         } else if (existingQty == quantity) {
-            // Delete position if 0 shares remaining
-            String delSql = "DELETE FROM portfolio WHERE user_id = ? AND symbol = ?";
+            String delSql = "DELETE FROM portfolio WHERE user_id = ? AND symbol = ? AND quantity = ?";
             try (PreparedStatement ps = conn.prepareStatement(delSql)) {
                 ps.setString(1, userId);
                 ps.setString(2, symbol);
+                ps.setInt(3, quantity);
                 return ps.executeUpdate() > 0;
             }
         } else {
-            int remaining = existingQty - quantity;
-            String updSql = "UPDATE portfolio SET quantity = ? WHERE user_id = ? AND symbol = ?";
+            String updSql = "UPDATE portfolio SET quantity = quantity - ? WHERE user_id = ? AND symbol = ? AND quantity >= ?";
             try (PreparedStatement ps = conn.prepareStatement(updSql)) {
-                ps.setInt(1, remaining);
+                ps.setInt(1, quantity);
                 ps.setString(2, userId);
                 ps.setString(3, symbol);
+                ps.setInt(4, quantity);
                 return ps.executeUpdate() > 0;
             }
         }

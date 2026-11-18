@@ -5,7 +5,6 @@ import model.UserRole;
 import server.JsonHelper;
 import service.*;
 
-import javax.servlet.ServletException;
 import javax.servlet.http.HttpServlet;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
@@ -13,18 +12,18 @@ import javax.servlet.http.HttpSession;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.security.SecureRandom;
+import java.util.Base64;
 import java.util.Map;
-import java.util.UUID;
 
 /**
  * Abstract Base Servlet providing common utilities for Request/Response handling,
- * Session management, JSON processing, defensive RBAC authorization, and shared Service instances.
- * Fulfills Servlets & Web Integration for GUVI Evaluation.
+ * Session management, cryptographic CSRF token generation, JSON processing, and RBAC helpers.
  */
 public abstract class BaseServlet extends HttpServlet {
     private static final long serialVersionUID = 1L;
+    private static final SecureRandom CSRF_RANDOM = new SecureRandom();
 
-    // Shared service singletons
     protected static IUserService userService;
     protected static IMarketUpdateService marketUpdateService;
     protected static IPortfolioService portfolioService;
@@ -56,9 +55,12 @@ public abstract class BaseServlet extends HttpServlet {
         authService = aService;
     }
 
-    /**
-     * Reads the entire body of an HTTP request as a UTF-8 string.
-     */
+    private static String generateCsrfToken() {
+        byte[] bytes = new byte[32];
+        CSRF_RANDOM.nextBytes(bytes);
+        return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
+    }
+
     protected String readRequestBody(HttpServletRequest request) throws IOException {
         StringBuilder sb = new StringBuilder();
         try (BufferedReader reader = request.getReader()) {
@@ -70,17 +72,11 @@ public abstract class BaseServlet extends HttpServlet {
         return sb.toString();
     }
 
-    /**
-     * Parses the request JSON body into a key-value Map.
-     */
     protected Map<String, String> parseJsonBody(HttpServletRequest request) throws IOException {
         String body = readRequestBody(request);
         return JsonHelper.parseSimpleJson(body);
     }
 
-    /**
-     * Sends a JSON response with status code and Content-Type header.
-     */
     protected void sendJsonResponse(HttpServletResponse response, int status, String json) throws IOException {
         response.setStatus(status);
         response.setContentType("application/json;charset=UTF-8");
@@ -89,9 +85,6 @@ public abstract class BaseServlet extends HttpServlet {
         response.getWriter().flush();
     }
 
-    /**
-     * Retrieves currently authenticated user from HttpSession.
-     */
     protected User getAuthenticatedUser(HttpServletRequest request) {
         HttpSession session = request.getSession(false);
         if (session != null) {
@@ -103,27 +96,35 @@ public abstract class BaseServlet extends HttpServlet {
         return null;
     }
 
+    protected String getCsrfToken(HttpServletRequest request) {
+        HttpSession session = request.getSession(false);
+        if (session == null) return "";
+        Object token = session.getAttribute("csrfToken");
+        if (token instanceof String && !((String) token).isEmpty()) {
+            return (String) token;
+        }
+        String fresh = generateCsrfToken();
+        session.setAttribute("csrfToken", fresh);
+        return fresh;
+    }
+
     /**
-     * Stores user into session after successful login with session fixation protection.
+     * Stores user into session after successful login with session fixation protection
+     * and generates a cryptographically random CSRF token bound to the new session.
      */
     protected void setAuthenticatedUser(HttpServletRequest request, User user) {
-        // Invalidate old session to prevent session fixation attacks
         HttpSession oldSession = request.getSession(false);
         if (oldSession != null) {
             oldSession.invalidate();
         }
 
-        // Create fresh authenticated session with new session ID
         HttpSession newSession = request.getSession(true);
         newSession.setAttribute("user", user);
         newSession.setAttribute("userId", user.getUserId());
         newSession.setAttribute("role", user.getRole().name());
-        newSession.setAttribute("csrfToken", UUID.randomUUID().toString());
+        newSession.setAttribute("csrfToken", generateCsrfToken());
     }
 
-    /**
-     * Invalidates HTTP Session upon logout.
-     */
     protected void clearAuthenticatedUser(HttpServletRequest request) {
         HttpSession session = request.getSession(false);
         if (session != null) {
@@ -131,12 +132,6 @@ public abstract class BaseServlet extends HttpServlet {
         }
     }
 
-    /**
-     * Defensive authorization helper for Admin servlets.
-     * Verifies server session and role; writes appropriate JSON error if unauthorized.
-     *
-     * @return true if caller is an authorized ADMIN; false otherwise
-     */
     protected boolean ensureAdmin(HttpServletRequest request, HttpServletResponse response) throws IOException {
         User user = getAuthenticatedUser(request);
         if (user == null) {
@@ -152,12 +147,6 @@ public abstract class BaseServlet extends HttpServlet {
         return true;
     }
 
-    /**
-     * Defensive authorization helper for user data isolation.
-     * Ensures caller is either an Admin or accessing their own resource.
-     *
-     * @return true if caller is authorized; false otherwise
-     */
     protected boolean ensureOwnerOrAdmin(HttpServletRequest request, HttpServletResponse response, String targetUserId)
             throws IOException {
         User user = getAuthenticatedUser(request);

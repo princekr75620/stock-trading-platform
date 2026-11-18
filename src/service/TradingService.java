@@ -4,18 +4,23 @@ import dao.*;
 import exception.*;
 import model.*;
 import util.DBConnection;
+import util.MoneyUtil;
 
+import java.math.BigDecimal;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
 /**
  * Authoritative Core Trading Engine executing equity BUY and SELL orders with ACID JDBC transactions.
- * Orchestrates UserDAO, StockDAO, PortfolioDAO, and TransactionDAO over a shared SQL Connection.
- * All financial records and trade history queries read directly from relational database persistence.
+ * Enforces:
+ * - BigDecimal financial precision (0.15% brokerage fee, HALF_UP rounding) via MoneyUtil
+ * - Row-level locking on MySQL (`FOR UPDATE`), `transaction_mode=IMMEDIATE` on SQLite, and atomic conditional SQL guards on balances & inventory
+ * - Idempotency key deduplication via `trade_idempotency` table inside the ACID transaction
+ * - Active market status validation on BOTH buy and sell orders
+ * - Post-commit-only notification & cache side effects
  */
 public class TradingService implements ITradingService, TradingServiceInterface {
 
@@ -24,7 +29,6 @@ public class TradingService implements ITradingService, TradingServiceInterface 
     private final INotificationService notificationService;
     private final IUserService userService;
 
-    // DAO Layer components
     private final UserDAO userDAO;
     private final StockDAO stockDAO;
     private final PortfolioDAO portfolioDAO;
@@ -44,13 +48,9 @@ public class TradingService implements ITradingService, TradingServiceInterface 
         this.portfolioDAO = new PortfolioDAO();
         this.transactionDAO = new TransactionDAO();
 
-        // Ensure relational database schema exists
         DBConnection.initializeDatabase();
     }
 
-    /**
-     * Backward-compatible constructor; ignores legacy initialTrades so JDBC remains authoritative.
-     */
     public TradingService(IMarketUpdateService marketUpdateService,
                           IPortfolioService portfolioService,
                           INotificationService notificationService,
@@ -59,14 +59,11 @@ public class TradingService implements ITradingService, TradingServiceInterface 
         this(marketUpdateService, portfolioService, notificationService, userService);
     }
 
-    /**
-     * Executes BUY order with atomic JDBC transaction management.
-     */
     @Override
-    public synchronized Trade executeBuy(String traderId, String symbol, int quantity)
+    public Trade executeBuy(String traderId, String symbol, int quantity)
             throws StockNotFoundException, InvalidInputException, InsufficientStockQuantityException {
         try {
-            Transaction tx = executeBuyTransaction(traderId, symbol, quantity);
+            Transaction tx = executeBuyTransaction(traderId, symbol, quantity, null);
             Stock stock = stockDAO.findBySymbol(tx.getSymbol());
             String stockName = stock != null ? stock.getName() : tx.getSymbol();
             return tx.toTrade(stockName);
@@ -83,10 +80,15 @@ public class TradingService implements ITradingService, TradingServiceInterface 
         }
     }
 
-    /**
-     * Core BUY transaction with full ACID rollback on any failure.
-     */
-    public synchronized Transaction executeBuyTransaction(String traderId, String symbol, int quantity)
+    @Override
+    public Transaction executeBuyTransaction(String traderId, String symbol, int quantity)
+            throws InsufficientBalanceException, InsufficientStockException,
+                   InvalidStockException, InvalidTransactionException, SQLException {
+        return executeBuyTransaction(traderId, symbol, quantity, null);
+    }
+
+    @Override
+    public Transaction executeBuyTransaction(String traderId, String symbol, int quantity, String idempotencyKey)
             throws InsufficientBalanceException, InsufficientStockException,
                    InvalidStockException, InvalidTransactionException, SQLException {
 
@@ -96,8 +98,13 @@ public class TradingService implements ITradingService, TradingServiceInterface 
         if (symbol == null || symbol.trim().isEmpty()) {
             throw new InvalidTransactionException("Stock symbol cannot be empty.");
         }
-        if (quantity <= 0) {
-            throw new InvalidTransactionException("Purchase quantity must be greater than zero.");
+        if (quantity <= 0 || quantity > MoneyUtil.MAX_ORDER_QUANTITY) {
+            throw new InvalidTransactionException("Purchase quantity must be between 1 and " + MoneyUtil.MAX_ORDER_QUANTITY + ".");
+        }
+        String trimmedKey = (idempotencyKey != null && !idempotencyKey.trim().isEmpty())
+                ? idempotencyKey.trim() : null;
+        if (trimmedKey != null && trimmedKey.length() > 100) {
+            throw new InvalidTransactionException("Idempotency-Key exceeds maximum length.");
         }
 
         String uid = traderId.trim();
@@ -106,51 +113,71 @@ public class TradingService implements ITradingService, TradingServiceInterface 
 
         try {
             conn = DBConnection.getConnection();
-            conn.setAutoCommit(false); // BEGIN ACID JDBC TRANSACTION
+            if (DBConnection.isMySQL()) {
+                conn.setTransactionIsolation(Connection.TRANSACTION_REPEATABLE_READ);
+            }
+            conn.setAutoCommit(false);
 
-            // Step 1: Load authoritative stock quote & float from DB within transaction
-            Stock stock = stockDAO.findBySymbol(conn, sym);
+            // Step 0: Reject duplicate order submissions within the same atomic transaction
+            if (trimmedKey != null && transactionDAO.existsIdempotencyKey(conn, uid, trimmedKey)) {
+                throw new DuplicateOrderException(trimmedKey,
+                        "Duplicate BUY order blocked: this order request has already been processed.");
+            }
+
+            // Step 1: Lock & load authoritative stock quote & float from DB
+            Stock stock = stockDAO.findBySymbolForUpdate(conn, sym);
             if (stock == null) {
                 throw new InvalidStockException("Stock symbol '" + sym + "' was not found on exchange.", sym);
             }
             if (!"ACTIVE".equalsIgnoreCase(stock.getStatus())) {
-                throw new InvalidTransactionException("Trading is currently halted for " + sym + ".");
+                throw new InvalidTransactionException("Trading is currently halted or suspended for " + sym + ".");
+            }
+            if (stock.getCurrentPrice() <= 0) {
+                throw new InvalidTransactionException("Stock '" + sym + "' has an invalid quote price.");
             }
             if (stock.getAvailableQuantity() < quantity) {
                 throw new InsufficientStockException(sym, quantity, stock.getAvailableQuantity());
             }
 
-            // Step 2: Load authoritative user balance from DB within transaction
-            User user = userDAO.findById(conn, uid);
+            // Step 2: Lock & load authoritative user balance from DB
+            User user = userDAO.findByIdForUpdate(conn, uid);
             if (user == null) {
                 throw new InvalidTransactionException("Trader account not found in database: " + uid);
             }
 
-            double currentPrice = stock.getCurrentPrice();
-            double totalAmount = Math.round((currentPrice * quantity) * 100.0) / 100.0;
-            double currentBalance = user.getBalance();
-
-            if (currentBalance < totalAmount) {
-                throw new InsufficientBalanceException(totalAmount, currentBalance);
+            BigDecimal currentPrice = MoneyUtil.of(stock.getCurrentPrice());
+            BigDecimal subtotal;
+            BigDecimal feeAmount;
+            BigDecimal totalAmount;
+            try {
+                subtotal = MoneyUtil.calculateSubtotal(currentPrice, quantity);
+                feeAmount = MoneyUtil.calculateFee(subtotal);
+                totalAmount = MoneyUtil.calculateBuyTotal(currentPrice, quantity);
+            } catch (IllegalArgumentException ex) {
+                throw new InvalidTransactionException(ex.getMessage());
             }
 
-            // Step 3: Deduct balance in DB
-            double newBalance = Math.round((currentBalance - totalAmount) * 100.0) / 100.0;
-            if (!userDAO.updateBalance(conn, user.getUserId(), newBalance)) {
-                throw new SQLException("Failed to update cash balance for trader: " + user.getUserId());
+            BigDecimal currentBalance = MoneyUtil.of(user.getBalance());
+            if (currentBalance.compareTo(totalAmount) < 0) {
+                throw new InsufficientBalanceException(totalAmount.doubleValue(), currentBalance.doubleValue());
             }
 
-            // Step 4: Atomically decrement stock float & increment volume in DB
+            // Step 3: Atomically deduct cash balance with conditional SQL balance >= totalAmount guard
+            if (!userDAO.adjustBalanceAtomically(conn, user.getUserId(), totalAmount.negate(), totalAmount)) {
+                throw new InsufficientBalanceException(totalAmount.doubleValue(), currentBalance.doubleValue());
+            }
+
+            // Step 4: Atomically decrement ACTIVE stock float & increment volume
             if (!stockDAO.updateQuantityAndVolume(conn, sym, quantity, true)) {
                 throw new InsufficientStockException(sym, quantity, stock.getAvailableQuantity());
             }
 
-            // Step 5: Upsert portfolio holdings & weighted average price in DB
-            if (!portfolioDAO.recordBuy(conn, user.getUserId(), stock.getId(), sym, quantity, currentPrice)) {
+            // Step 5: Upsert portfolio holdings & weighted average price
+            if (!portfolioDAO.recordBuy(conn, user.getUserId(), stock.getId(), sym, quantity, currentPrice.doubleValue())) {
                 throw new SQLException("Failed to update portfolio holdings for " + sym);
             }
 
-            // Step 6: Insert transaction audit record in DB
+            // Step 6: Insert transaction audit record
             Transaction tx = new Transaction(
                     user.getUserId(),
                     stock.getId(),
@@ -158,26 +185,36 @@ public class TradingService implements ITradingService, TradingServiceInterface 
                     "BUY",
                     quantity,
                     currentPrice,
-                    totalAmount
+                    feeAmount,
+                    totalAmount,
+                    trimmedKey
             );
             if (!transactionDAO.insert(conn, tx)) {
                 throw new SQLException("Failed to record transaction ledger entry.");
             }
 
-            // Step 7: Commit ACID transaction
-            conn.commit();
-
-            if (portfolioService != null) {
-                portfolioService.updateOnBuy(user.getUserId(), sym, quantity, currentPrice);
+            // Step 7: Persist idempotency key in the same ACID transaction
+            if (trimmedKey != null && !transactionDAO.recordIdempotencyKey(conn, user.getUserId(), trimmedKey, tx.getId())) {
+                throw new DuplicateOrderException(trimmedKey,
+                        "Duplicate BUY order blocked: this order request has already been processed.");
             }
 
+            // Step 8: Commit ACID transaction
+            conn.commit();
+
+            // Post-commit side effects ONLY after durable DB commit
+            BigDecimal newBalance = currentBalance.subtract(totalAmount);
+            if (portfolioService != null) {
+                portfolioService.updateOnBuy(user.getUserId(), sym, quantity, currentPrice.doubleValue());
+            }
             if (notificationService != null) {
                 notificationService.sendNotification(new Notification(
                         "NOTIF-" + (System.currentTimeMillis() % 100000),
                         user.getUserId(),
                         "Order Executed: BUY " + sym,
-                        String.format("Purchased %d shares of %s at ₹%.2f. Total: ₹%.2f. Cash remaining: ₹%.2f.",
-                                quantity, sym, currentPrice, totalAmount, newBalance),
+                        String.format("Purchased %d shares of %s at ₹%.2f (Fee: ₹%.2f). Total: ₹%.2f. Cash remaining: ₹%.2f.",
+                                quantity, sym, currentPrice.doubleValue(), feeAmount.doubleValue(),
+                                totalAmount.doubleValue(), newBalance.doubleValue()),
                         Notification.NotificationType.TRADE_BUY
                 ));
             }
@@ -187,12 +224,16 @@ public class TradingService implements ITradingService, TradingServiceInterface 
         } catch (Exception e) {
             if (conn != null) {
                 try {
-                    System.err.println("[TradingService] Rolling back BUY transaction due to: " + e.getMessage());
                     conn.rollback();
                 } catch (SQLException rbEx) {
-                    System.err.println("[TradingService] Failed to rollback transaction: " + rbEx.getMessage());
+                    System.err.println("[TradingService] Failed to rollback BUY transaction: " + rbEx.getMessage());
                 }
             }
+            if (trimmedKey != null && e instanceof SQLException && isUniqueConstraintViolation((SQLException) e)) {
+                throw new DuplicateOrderException(trimmedKey,
+                        "Duplicate BUY order blocked: this order request has already been processed.");
+            }
+            if (e instanceof DuplicateOrderException) throw (DuplicateOrderException) e;
             if (e instanceof InsufficientBalanceException) throw (InsufficientBalanceException) e;
             if (e instanceof InsufficientStockException) throw (InsufficientStockException) e;
             if (e instanceof InvalidStockException) throw (InvalidStockException) e;
@@ -209,14 +250,11 @@ public class TradingService implements ITradingService, TradingServiceInterface 
         }
     }
 
-    /**
-     * Executes SELL order with atomic JDBC transaction management.
-     */
     @Override
-    public synchronized Trade executeSell(String traderId, String symbol, int quantity)
+    public Trade executeSell(String traderId, String symbol, int quantity)
             throws StockNotFoundException, InvalidInputException, InsufficientHoldingsException {
         try {
-            Transaction tx = executeSellTransaction(traderId, symbol, quantity);
+            Transaction tx = executeSellTransaction(traderId, symbol, quantity, null);
             Stock stock = stockDAO.findBySymbol(tx.getSymbol());
             String stockName = stock != null ? stock.getName() : tx.getSymbol();
             return tx.toTrade(stockName);
@@ -231,10 +269,15 @@ public class TradingService implements ITradingService, TradingServiceInterface 
         }
     }
 
-    /**
-     * Core SELL transaction with full ACID rollback on any failure.
-     */
-    public synchronized Transaction executeSellTransaction(String traderId, String symbol, int quantity)
+    @Override
+    public Transaction executeSellTransaction(String traderId, String symbol, int quantity)
+            throws InsufficientHoldingsException, InvalidStockException,
+                   InvalidTransactionException, SQLException {
+        return executeSellTransaction(traderId, symbol, quantity, null);
+    }
+
+    @Override
+    public Transaction executeSellTransaction(String traderId, String symbol, int quantity, String idempotencyKey)
             throws InsufficientHoldingsException, InvalidStockException,
                    InvalidTransactionException, SQLException {
 
@@ -244,8 +287,13 @@ public class TradingService implements ITradingService, TradingServiceInterface 
         if (symbol == null || symbol.trim().isEmpty()) {
             throw new InvalidTransactionException("Stock symbol cannot be empty.");
         }
-        if (quantity <= 0) {
-            throw new InvalidTransactionException("Sell quantity must be greater than zero.");
+        if (quantity <= 0 || quantity > MoneyUtil.MAX_ORDER_QUANTITY) {
+            throw new InvalidTransactionException("Sell quantity must be between 1 and " + MoneyUtil.MAX_ORDER_QUANTITY + ".");
+        }
+        String trimmedKey = (idempotencyKey != null && !idempotencyKey.trim().isEmpty())
+                ? idempotencyKey.trim() : null;
+        if (trimmedKey != null && trimmedKey.length() > 100) {
+            throw new InvalidTransactionException("Idempotency-Key exceeds maximum length.");
         }
 
         String uid = traderId.trim();
@@ -254,16 +302,31 @@ public class TradingService implements ITradingService, TradingServiceInterface 
 
         try {
             conn = DBConnection.getConnection();
-            conn.setAutoCommit(false); // BEGIN ACID JDBC TRANSACTION
+            if (DBConnection.isMySQL()) {
+                conn.setTransactionIsolation(Connection.TRANSACTION_REPEATABLE_READ);
+            }
+            conn.setAutoCommit(false);
 
-            // Step 1: Load authoritative stock from DB
-            Stock stock = stockDAO.findBySymbol(conn, sym);
+            // Step 0: Deduplicate retried/double-clicked SELL requests
+            if (trimmedKey != null && transactionDAO.existsIdempotencyKey(conn, uid, trimmedKey)) {
+                throw new DuplicateOrderException(trimmedKey,
+                        "Duplicate SELL order blocked: this order request has already been processed.");
+            }
+
+            // Step 1: Lock & load authoritative stock from DB and enforce ACTIVE status
+            Stock stock = stockDAO.findBySymbolForUpdate(conn, sym);
             if (stock == null) {
                 throw new InvalidStockException("Stock symbol '" + sym + "' was not found on exchange.", sym);
             }
+            if (!"ACTIVE".equalsIgnoreCase(stock.getStatus())) {
+                throw new InvalidTransactionException("Trading is currently halted or suspended for " + sym + ".");
+            }
+            if (stock.getCurrentPrice() <= 0) {
+                throw new InvalidTransactionException("Stock '" + sym + "' has an invalid quote price.");
+            }
 
-            // Step 2: Load authoritative user from DB
-            User user = userDAO.findById(conn, uid);
+            // Step 2: Lock & load authoritative user from DB
+            User user = userDAO.findByIdForUpdate(conn, uid);
             if (user == null) {
                 throw new InvalidTransactionException("Trader account not found in database: " + uid);
             }
@@ -278,26 +341,39 @@ public class TradingService implements ITradingService, TradingServiceInterface 
                 ));
             }
 
-            double currentPrice = stock.getCurrentPrice();
-            double totalProceeds = Math.round((currentPrice * quantity) * 100.0) / 100.0;
+            BigDecimal currentPrice = MoneyUtil.of(stock.getCurrentPrice());
+            BigDecimal subtotal;
+            BigDecimal feeAmount;
+            BigDecimal netProceeds;
+            try {
+                subtotal = MoneyUtil.calculateSubtotal(currentPrice, quantity);
+                feeAmount = MoneyUtil.calculateFee(subtotal);
+                netProceeds = MoneyUtil.calculateSellNetProceeds(currentPrice, quantity);
+            } catch (IllegalArgumentException ex) {
+                throw new InvalidTransactionException(ex.getMessage());
+            }
 
-            // Step 4: Credit cash balance in DB
-            double newBalance = Math.round((user.getBalance() + totalProceeds) * 100.0) / 100.0;
-            if (!userDAO.updateBalance(conn, user.getUserId(), newBalance)) {
+            BigDecimal currentBalance = MoneyUtil.of(user.getBalance());
+            if (currentBalance.add(netProceeds).compareTo(MoneyUtil.MAX_MONETARY_AMOUNT) > 0) {
+                throw new InvalidTransactionException("Resulting balance exceeds platform safety limit.");
+            }
+
+            // Step 4: Decrease/remove portfolio holding atomically with quantity >= ? guard
+            if (!portfolioDAO.recordSell(conn, user.getUserId(), sym, quantity)) {
+                throw new InsufficientHoldingsException(sym, quantity, ownedQty);
+            }
+
+            // Step 5: Credit net proceeds (after 0.15% fee) to cash balance atomically
+            if (!userDAO.adjustBalanceAtomically(conn, user.getUserId(), netProceeds, null)) {
                 throw new SQLException("Failed to update cash balance for trader: " + user.getUserId());
             }
 
-            // Step 5: Decrease/remove portfolio holding in DB
-            if (!portfolioDAO.recordSell(conn, user.getUserId(), sym, quantity)) {
-                throw new SQLException("Failed to update portfolio holding for " + sym);
-            }
-
-            // Step 6: Return shares to market float in DB
+            // Step 6: Return shares to market float for ACTIVE stock
             if (!stockDAO.updateQuantityAndVolume(conn, sym, quantity, false)) {
-                throw new SQLException("Failed to update stock inventory for " + sym);
+                throw new InvalidTransactionException("Failed to update active stock inventory for " + sym);
             }
 
-            // Step 7: Insert transaction audit record in DB
+            // Step 7: Insert transaction audit record
             Transaction tx = new Transaction(
                     user.getUserId(),
                     stock.getId(),
@@ -305,27 +381,36 @@ public class TradingService implements ITradingService, TradingServiceInterface 
                     "SELL",
                     quantity,
                     currentPrice,
-                    totalProceeds
+                    feeAmount,
+                    netProceeds,
+                    trimmedKey
             );
             if (!transactionDAO.insert(conn, tx)) {
                 throw new SQLException("Failed to record transaction ledger entry.");
             }
 
-            // Step 8: Commit ACID transaction
-            conn.commit();
-
-            double realizedGain = 0.0;
-            if (portfolioService != null) {
-                realizedGain = portfolioService.updateOnSell(user.getUserId(), sym, quantity, currentPrice);
+            // Step 8: Persist idempotency key atomically
+            if (trimmedKey != null && !transactionDAO.recordIdempotencyKey(conn, user.getUserId(), trimmedKey, tx.getId())) {
+                throw new DuplicateOrderException(trimmedKey,
+                        "Duplicate SELL order blocked: this order request has already been processed.");
             }
 
+            // Step 9: Commit ACID transaction
+            conn.commit();
+
+            // Post-commit side effects ONLY after durable commit
+            BigDecimal newBalance = currentBalance.add(netProceeds);
+            if (portfolioService != null) {
+                portfolioService.updateOnSell(user.getUserId(), sym, quantity, currentPrice.doubleValue());
+            }
             if (notificationService != null) {
                 notificationService.sendNotification(new Notification(
                         "NOTIF-" + (System.currentTimeMillis() % 100000),
                         user.getUserId(),
                         "Order Executed: SELL " + sym,
-                        String.format("Sold %d shares of %s at ₹%.2f. Proceeds: ₹%.2f. Balance: ₹%.2f.",
-                                quantity, sym, currentPrice, totalProceeds, newBalance),
+                        String.format("Sold %d shares of %s at ₹%.2f (Fee: ₹%.2f). Net Proceeds: ₹%.2f. Balance: ₹%.2f.",
+                                quantity, sym, currentPrice.doubleValue(), feeAmount.doubleValue(),
+                                netProceeds.doubleValue(), newBalance.doubleValue()),
                         Notification.NotificationType.TRADE_SELL
                 ));
             }
@@ -335,12 +420,16 @@ public class TradingService implements ITradingService, TradingServiceInterface 
         } catch (Exception e) {
             if (conn != null) {
                 try {
-                    System.err.println("[TradingService] Rolling back SELL transaction due to: " + e.getMessage());
                     conn.rollback();
                 } catch (SQLException rbEx) {
-                    System.err.println("[TradingService] Failed to rollback transaction: " + rbEx.getMessage());
+                    System.err.println("[TradingService] Failed to rollback SELL transaction: " + rbEx.getMessage());
                 }
             }
+            if (trimmedKey != null && e instanceof SQLException && isUniqueConstraintViolation((SQLException) e)) {
+                throw new DuplicateOrderException(trimmedKey,
+                        "Duplicate SELL order blocked: this order request has already been processed.");
+            }
+            if (e instanceof DuplicateOrderException) throw (DuplicateOrderException) e;
             if (e instanceof InsufficientHoldingsException) throw (InsufficientHoldingsException) e;
             if (e instanceof InvalidStockException) throw (InvalidStockException) e;
             if (e instanceof InvalidTransactionException) throw (InvalidTransactionException) e;
@@ -354,6 +443,12 @@ public class TradingService implements ITradingService, TradingServiceInterface 
                 } catch (SQLException ignored) {}
             }
         }
+    }
+
+    private boolean isUniqueConstraintViolation(SQLException e) {
+        String state = e.getSQLState();
+        String msg = e.getMessage() != null ? e.getMessage().toLowerCase() : "";
+        return "23000".equals(state) || "23505".equals(state) || msg.contains("unique") || msg.contains("duplicate");
     }
 
     @Override
@@ -431,10 +526,10 @@ public class TradingService implements ITradingService, TradingServiceInterface 
 
     @Override
     public double getTotalTradingVolume() {
-        double vol = 0.0;
+        BigDecimal vol = BigDecimal.ZERO;
         for (Transaction tx : getAllTransactions()) {
-            vol += tx.getTotalAmount();
+            vol = vol.add(tx.getTotalAmountDecimal());
         }
-        return Math.round(vol * 100.0) / 100.0;
+        return MoneyUtil.round(vol).doubleValue();
     }
 }

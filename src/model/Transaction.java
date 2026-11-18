@@ -1,13 +1,16 @@
 package model;
 
+import util.MoneyUtil;
+
 import java.io.Serializable;
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 
 /**
  * Model class representing an executed financial trade transaction.
- * Demonstrates Encapsulation with private fields and standard getters/setters.
- * Fulfills Core Java Encapsulation and Model requirement for GUVI Evaluation.
+ * Stores monetary price, brokerage fee, and net total using BigDecimal precision
+ * while preserving double getters/setters for seamless compatibility.
  */
 public class Transaction implements Serializable {
     private static final long serialVersionUID = 1L;
@@ -19,43 +22,54 @@ public class Transaction implements Serializable {
     private String symbol;
     private String transactionType; // "BUY" or "SELL"
     private int quantity;
-    private double price;
-    private double totalAmount;
+    private BigDecimal price = MoneyUtil.ZERO;
+    private BigDecimal feeAmount = MoneyUtil.ZERO;
+    private BigDecimal totalAmount = MoneyUtil.ZERO;
+    private String idempotencyKey;
     private LocalDateTime transactionDate;
 
-    // Default constructor
     public Transaction() {
         this.transactionDate = LocalDateTime.now();
     }
 
-    // Parameterized constructor without primary key ID
     public Transaction(String userId, int stockId, String symbol, String transactionType,
                        int quantity, double price, double totalAmount) {
-        this.userId = userId;
-        this.stockId = stockId;
-        this.symbol = symbol != null ? symbol.toUpperCase() : "";
-        this.transactionType = transactionType != null ? transactionType.toUpperCase() : "BUY";
-        this.quantity = quantity;
-        this.price = price;
-        this.totalAmount = totalAmount;
-        this.transactionDate = LocalDateTime.now();
+        this(0, userId, stockId, symbol, transactionType, quantity,
+                MoneyUtil.ofExact(price), MoneyUtil.ZERO, MoneyUtil.of(totalAmount),
+                null, LocalDateTime.now());
     }
 
-    // Full constructor including primary key ID and transaction date
     public Transaction(int id, String userId, int stockId, String symbol, String transactionType,
                        int quantity, double price, double totalAmount, LocalDateTime transactionDate) {
+        this(id, userId, stockId, symbol, transactionType, quantity,
+                MoneyUtil.ofExact(price), MoneyUtil.ZERO, MoneyUtil.of(totalAmount),
+                null, transactionDate);
+    }
+
+    public Transaction(String userId, int stockId, String symbol, String transactionType,
+                       int quantity, BigDecimal price, BigDecimal feeAmount,
+                       BigDecimal totalAmount, String idempotencyKey) {
+        this(0, userId, stockId, symbol, transactionType, quantity,
+                price, feeAmount, totalAmount, idempotencyKey, LocalDateTime.now());
+    }
+
+    public Transaction(int id, String userId, int stockId, String symbol, String transactionType,
+                       int quantity, BigDecimal price, BigDecimal feeAmount,
+                       BigDecimal totalAmount, String idempotencyKey, LocalDateTime transactionDate) {
         this.id = id;
         this.userId = userId;
         this.stockId = stockId;
         this.symbol = symbol != null ? symbol.toUpperCase() : "";
         this.transactionType = transactionType != null ? transactionType.toUpperCase() : "BUY";
         this.quantity = quantity;
-        this.price = price;
-        this.totalAmount = totalAmount;
+        this.price = price != null ? MoneyUtil.round(price) : MoneyUtil.ZERO;
+        this.feeAmount = feeAmount != null ? MoneyUtil.round(feeAmount) : MoneyUtil.ZERO;
+        this.totalAmount = totalAmount != null ? MoneyUtil.round(totalAmount) : MoneyUtil.ZERO;
+        this.idempotencyKey = (idempotencyKey != null && !idempotencyKey.trim().isEmpty())
+                ? idempotencyKey.trim() : null;
         this.transactionDate = transactionDate != null ? transactionDate : LocalDateTime.now();
     }
 
-    // Getters and Setters (Encapsulation)
     public int getId() {
         return id;
     }
@@ -105,19 +119,56 @@ public class Transaction implements Serializable {
     }
 
     public double getPrice() {
-        return price;
+        return price != null ? price.doubleValue() : 0.0;
+    }
+
+    public BigDecimal getPriceDecimal() {
+        return price != null ? price : MoneyUtil.ZERO;
     }
 
     public void setPrice(double price) {
-        this.price = price;
+        this.price = MoneyUtil.of(price);
+    }
+
+    public void setPriceDecimal(BigDecimal price) {
+        this.price = price != null ? MoneyUtil.round(price) : MoneyUtil.ZERO;
+    }
+
+    public double getFeeAmount() {
+        return feeAmount != null ? feeAmount.doubleValue() : 0.0;
+    }
+
+    public BigDecimal getFeeAmountDecimal() {
+        return feeAmount != null ? feeAmount : MoneyUtil.ZERO;
+    }
+
+    public void setFeeAmountDecimal(BigDecimal feeAmount) {
+        this.feeAmount = feeAmount != null ? MoneyUtil.round(feeAmount) : MoneyUtil.ZERO;
     }
 
     public double getTotalAmount() {
-        return totalAmount;
+        return totalAmount != null ? totalAmount.doubleValue() : 0.0;
+    }
+
+    public BigDecimal getTotalAmountDecimal() {
+        return totalAmount != null ? totalAmount : MoneyUtil.ZERO;
     }
 
     public void setTotalAmount(double totalAmount) {
-        this.totalAmount = totalAmount;
+        this.totalAmount = MoneyUtil.of(totalAmount);
+    }
+
+    public void setTotalAmountDecimal(BigDecimal totalAmount) {
+        this.totalAmount = totalAmount != null ? MoneyUtil.round(totalAmount) : MoneyUtil.ZERO;
+    }
+
+    public String getIdempotencyKey() {
+        return idempotencyKey;
+    }
+
+    public void setIdempotencyKey(String idempotencyKey) {
+        this.idempotencyKey = (idempotencyKey != null && !idempotencyKey.trim().isEmpty())
+                ? idempotencyKey.trim() : null;
     }
 
     public LocalDateTime getTransactionDate() {
@@ -132,9 +183,6 @@ public class Transaction implements Serializable {
         return transactionDate != null ? transactionDate.format(FORMATTER) : "N/A";
     }
 
-    /**
-     * Converts to existing Trade model for seamless compatibility across the platform.
-     */
     public Trade toTrade(String stockName) {
         TradeType type = "SELL".equalsIgnoreCase(transactionType) ? TradeType.SELL : TradeType.BUY;
         return new Trade(
@@ -144,15 +192,15 @@ public class Transaction implements Serializable {
                 stockName != null ? stockName : symbol,
                 quantity,
                 type,
-                price,
-                totalAmount,
+                getPrice(),
+                getTotalAmount(),
                 transactionDate
         );
     }
 
     @Override
     public String toString() {
-        return String.format("Transaction #%d | User: %s | %s %d %s @ $%.2f | Total: $%.2f | %s",
-                id, userId, transactionType, quantity, symbol, price, totalAmount, getFormattedDate());
+        return String.format("Transaction #%d | User: %s | %s %d %s @ ₹%.2f (Fee: ₹%.2f) | Total: ₹%.2f | %s",
+                id, userId, transactionType, quantity, symbol, getPrice(), getFeeAmount(), getTotalAmount(), getFormattedDate());
     }
 }

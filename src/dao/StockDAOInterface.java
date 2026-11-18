@@ -8,11 +8,11 @@ import java.util.Map;
 
 /**
  * Interface defining contract for Stock database operations.
- * Fulfills Core Java Interfaces & DAO architecture requirements for GUVI Evaluation.
  */
 public interface StockDAOInterface {
     Stock findBySymbol(String symbol) throws SQLException;
     Stock findBySymbol(Connection conn, String symbol) throws SQLException;
+    Stock findBySymbolForUpdate(Connection conn, String symbol) throws SQLException;
     Stock findById(int id) throws SQLException;
     List<Stock> findAll() throws SQLException;
     Map<String, Stock> findAllAsMap() throws SQLException;
@@ -20,6 +20,6 @@ public interface StockDAOInterface {
     boolean insert(Stock stock) throws SQLException;
     int insertBatch(List<Stock> stocks) throws SQLException;
     boolean update(Stock stock) throws SQLException;
-    boolean updateQuantityAndVolume(Connection conn, String symbol, int quantitySold, boolean isBuy) throws SQLException;
+    boolean updateQuantityAndVolume(Connection conn, String symbol, int quantityDelta, boolean isBuy) throws SQLException;
     boolean delete(String symbol) throws SQLException;
 }

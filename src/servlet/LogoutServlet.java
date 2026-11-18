@@ -7,8 +7,7 @@ import java.io.IOException;
 
 /**
  * Servlet handling User Logout.
- * Invalidates the active HttpSession and clears security tokens.
- * Fulfills Servlets & Authentication (Rubric Section 10 & 11) for GUVI Evaluation.
+ * Strictly requires POST (rejects GET with 405 Method Not Allowed) and invalidates HttpSession.
  */
 public class LogoutServlet extends BaseServlet {
     private static final long serialVersionUID = 1L;
@@ -23,6 +22,8 @@ public class LogoutServlet extends BaseServlet {
     @Override
     protected void doGet(HttpServletRequest request, HttpServletResponse response)
             throws ServletException, IOException {
-        doPost(request, response);
+        response.setHeader("Allow", "POST");
+        sendJsonResponse(response, HttpServletResponse.SC_METHOD_NOT_ALLOWED,
+                "{\"success\":false,\"error\":\"Method Not Allowed. Use POST /api/auth/logout.\"}");
     }
 }

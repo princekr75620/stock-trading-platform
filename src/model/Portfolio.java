@@ -1,136 +1,155 @@
 package model;
 
+import util.MoneyUtil;
+
 import java.io.Serializable;
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 
 /**
  * Represents a Trader's investment portfolio.
- * Tracks stocks owned, quantities, cost basis (purchase value), current value, and profit/loss.
- * Demonstrates Collections (HashMap), Encapsulation, and Business Logic separation.
+ * Uses BigDecimal financial arithmetic via MoneyUtil for weighted average cost basis,
+ * market valuation, and realized/unrealized P&L without floating-point rounding drift.
  */
 public class Portfolio implements Serializable {
     private static final long serialVersionUID = 1L;
 
     private String traderId;
-    // Map of stock symbol -> quantity owned
-    private Map<String, Integer> holdings;
-    // Map of stock symbol -> total cost basis paid for currently held shares
-    private Map<String, Double> costBasis;
-    // Cumulative realized profit/loss from sold stocks
-    private double realizedProfitLoss;
+    private final Map<String, Integer> holdings;
+    private final Map<String, BigDecimal> costBasis;
+    private BigDecimal realizedProfitLoss;
 
     public Portfolio(String traderId) {
         this.traderId = traderId;
         this.holdings = new HashMap<>();
         this.costBasis = new HashMap<>();
-        this.realizedProfitLoss = 0.0;
+        this.realizedProfitLoss = MoneyUtil.ZERO;
     }
 
     public Portfolio(String traderId, Map<String, Integer> holdings, Map<String, Double> costBasis, double realizedProfitLoss) {
         this.traderId = traderId;
         this.holdings = (holdings != null) ? new HashMap<>(holdings) : new HashMap<>();
-        this.costBasis = (costBasis != null) ? new HashMap<>(costBasis) : new HashMap<>();
-        this.realizedProfitLoss = realizedProfitLoss;
+        this.costBasis = new HashMap<>();
+        if (costBasis != null) {
+            for (Map.Entry<String, Double> e : costBasis.entrySet()) {
+                if (e.getKey() != null && e.getValue() != null) {
+                    this.costBasis.put(e.getKey().toUpperCase().trim(), MoneyUtil.of(e.getValue()));
+                }
+            }
+        }
+        this.realizedProfitLoss = MoneyUtil.of(realizedProfitLoss);
     }
 
-    /**
-     * Updates portfolio upon a BUY transaction.
-     */
     public synchronized void recordBuy(String symbol, int quantity, double price) {
-        symbol = symbol.toUpperCase().trim();
-        int currentQty = holdings.getOrDefault(symbol, 0);
-        double currentCost = costBasis.getOrDefault(symbol, 0.0);
+        if (symbol == null || quantity <= 0) {
+            throw new IllegalArgumentException("Symbol and positive quantity are required.");
+        }
+        String sym = symbol.toUpperCase().trim();
+        int currentQty = holdings.getOrDefault(sym, 0);
+        BigDecimal currentCost = costBasis.getOrDefault(sym, BigDecimal.ZERO);
 
-        holdings.put(symbol, currentQty + quantity);
-        costBasis.put(symbol, currentCost + (quantity * price));
+        BigDecimal addedCost = MoneyUtil.ofExact(price).multiply(BigDecimal.valueOf(quantity));
+        holdings.put(sym, currentQty + quantity);
+        costBasis.put(sym, currentCost.add(addedCost));
     }
 
-    /**
-     * Updates portfolio upon a SELL transaction.
-     * Calculates realized gain/loss using weighted average cost basis.
-     * Returns the realized profit/loss on this sale.
-     */
     public synchronized double recordSell(String symbol, int quantity, double sellPrice) {
-        symbol = symbol.toUpperCase().trim();
-        int currentQty = holdings.getOrDefault(symbol, 0);
+        if (symbol == null || quantity <= 0) {
+            throw new IllegalArgumentException("Symbol and positive quantity are required.");
+        }
+        String sym = symbol.toUpperCase().trim();
+        int currentQty = holdings.getOrDefault(sym, 0);
         if (currentQty < quantity) {
             throw new IllegalArgumentException("Cannot sell more shares than currently owned!");
         }
 
-        double currentCost = costBasis.getOrDefault(symbol, 0.0);
-        double avgCostPerShare = currentQty > 0 ? (currentCost / currentQty) : 0.0;
-        double costOfSoldShares = avgCostPerShare * quantity;
-        double saleRevenue = quantity * sellPrice;
-        double saleProfit = saleRevenue - costOfSoldShares;
+        BigDecimal currentCost = costBasis.getOrDefault(sym, BigDecimal.ZERO);
+        BigDecimal avgCostPerShare = currentQty > 0
+                ? currentCost.divide(BigDecimal.valueOf(currentQty), 6, RoundingMode.HALF_UP)
+                : BigDecimal.ZERO;
+        BigDecimal costOfSoldShares = avgCostPerShare.multiply(BigDecimal.valueOf(quantity));
+        BigDecimal saleRevenue = MoneyUtil.ofExact(sellPrice).multiply(BigDecimal.valueOf(quantity));
+        BigDecimal saleProfit = saleRevenue.subtract(costOfSoldShares);
 
-        this.realizedProfitLoss += saleProfit;
+        this.realizedProfitLoss = this.realizedProfitLoss.add(saleProfit);
 
         int remainingQty = currentQty - quantity;
         if (remainingQty == 0) {
-            holdings.remove(symbol);
-            costBasis.remove(symbol);
+            holdings.remove(sym);
+            costBasis.remove(sym);
         } else {
-            holdings.put(symbol, remainingQty);
-            costBasis.put(symbol, currentCost - costOfSoldShares);
+            holdings.put(sym, remainingQty);
+            BigDecimal remainingCost = currentCost.subtract(costOfSoldShares);
+            costBasis.put(sym, remainingCost.compareTo(BigDecimal.ZERO) > 0 ? remainingCost : BigDecimal.ZERO);
         }
 
-        return saleProfit;
+        return MoneyUtil.round(saleProfit).doubleValue();
     }
 
-    /**
-     * Updates portfolio upon a SELL transaction using weighted average buy price as benchmark.
-     */
     public synchronized double recordSell(String symbol, int quantity) {
         return recordSell(symbol, quantity, getAverageBuyPrice(symbol));
     }
 
     public int getQuantity(String symbol) {
+        if (symbol == null) return 0;
         return holdings.getOrDefault(symbol.toUpperCase().trim(), 0);
     }
 
     public double getCostBasis(String symbol) {
-        return costBasis.getOrDefault(symbol.toUpperCase().trim(), 0.0);
+        if (symbol == null) return 0.0;
+        return MoneyUtil.round(costBasis.getOrDefault(symbol.toUpperCase().trim(), BigDecimal.ZERO)).doubleValue();
     }
 
     public double getAverageBuyPrice(String symbol) {
-        int qty = getQuantity(symbol);
-        if (qty == 0) return 0.0;
-        return costBasis.getOrDefault(symbol.toUpperCase().trim(), 0.0) / qty;
+        if (symbol == null) return 0.0;
+        String sym = symbol.toUpperCase().trim();
+        int qty = holdings.getOrDefault(sym, 0);
+        if (qty <= 0) return 0.0;
+        BigDecimal cost = costBasis.getOrDefault(sym, BigDecimal.ZERO);
+        return cost.divide(BigDecimal.valueOf(qty), MoneyUtil.CURRENCY_SCALE, MoneyUtil.ROUNDING).doubleValue();
     }
 
     public double getTotalInvestmentValue() {
-        double total = 0.0;
-        for (double cost : costBasis.values()) {
-            total += cost;
+        BigDecimal total = BigDecimal.ZERO;
+        for (BigDecimal cost : costBasis.values()) {
+            if (cost != null) {
+                total = total.add(cost);
+            }
         }
-        return Math.round(total * 100.0) / 100.0;
+        return MoneyUtil.round(total).doubleValue();
     }
 
     public double getCurrentPortfolioValue(Map<String, Stock> marketStocks) {
-        double total = 0.0;
+        BigDecimal total = BigDecimal.ZERO;
+        if (marketStocks == null) return 0.0;
         for (Map.Entry<String, Integer> entry : holdings.entrySet()) {
             String sym = entry.getKey();
             int qty = entry.getValue();
             Stock stock = marketStocks.get(sym);
-            double price = stock != null ? stock.getCurrentPrice() : 0.0;
-            total += (qty * price);
+            BigDecimal price = (stock != null && stock.getCurrentPrice() > 0)
+                    ? MoneyUtil.ofExact(stock.getCurrentPrice())
+                    : BigDecimal.ZERO;
+            total = total.add(price.multiply(BigDecimal.valueOf(qty)));
         }
-        return Math.round(total * 100.0) / 100.0;
+        return MoneyUtil.round(total).doubleValue();
     }
 
     public double getUnrealizedProfitLoss(Map<String, Stock> marketStocks) {
-        double curVal = getCurrentPortfolioValue(marketStocks);
-        double investVal = getTotalInvestmentValue();
-        return Math.round((curVal - investVal) * 100.0) / 100.0;
+        BigDecimal curVal = MoneyUtil.of(getCurrentPortfolioValue(marketStocks));
+        BigDecimal investVal = MoneyUtil.of(getTotalInvestmentValue());
+        return MoneyUtil.round(curVal.subtract(investVal)).doubleValue();
     }
 
     public double getUnrealizedProfitLossPercent(Map<String, Stock> marketStocks) {
-        double investVal = getTotalInvestmentValue();
-        if (investVal == 0.0) return 0.0;
-        double pnl = getUnrealizedProfitLoss(marketStocks);
-        return Math.round((pnl / investVal * 100.0) * 100.0) / 100.0;
+        BigDecimal investVal = MoneyUtil.of(getTotalInvestmentValue());
+        if (investVal.compareTo(BigDecimal.ZERO) <= 0) return 0.0;
+        BigDecimal pnl = MoneyUtil.of(getUnrealizedProfitLoss(marketStocks));
+        return pnl.multiply(MoneyUtil.HUNDRED)
+                .divide(investVal, MoneyUtil.CURRENCY_SCALE, MoneyUtil.ROUNDING)
+                .doubleValue();
     }
 
     public String getTraderId() {
@@ -142,12 +161,7 @@ public class Portfolio implements Serializable {
     }
 
     public double getAveragePrice(String symbol) {
-        if (symbol == null) return 0.0;
-        symbol = symbol.toUpperCase().trim();
-        int qty = holdings.getOrDefault(symbol, 0);
-        if (qty <= 0) return 0.0;
-        double cost = costBasis.getOrDefault(symbol, 0.0);
-        return Math.round((cost / qty) * 100.0) / 100.0;
+        return getAverageBuyPrice(symbol);
     }
 
     public Map<String, Integer> getHoldings() {
@@ -155,10 +169,14 @@ public class Portfolio implements Serializable {
     }
 
     public Map<String, Double> getCostBasisMap() {
-        return Collections.unmodifiableMap(costBasis);
+        Map<String, Double> result = new HashMap<>();
+        for (Map.Entry<String, BigDecimal> e : costBasis.entrySet()) {
+            result.put(e.getKey(), MoneyUtil.round(e.getValue()).doubleValue());
+        }
+        return Collections.unmodifiableMap(result);
     }
 
     public double getRealizedProfitLoss() {
-        return Math.round(realizedProfitLoss * 100.0) / 100.0;
+        return MoneyUtil.round(realizedProfitLoss).doubleValue();
     }
 }

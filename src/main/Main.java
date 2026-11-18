@@ -5,8 +5,10 @@ import model.*;
 import service.*;
 import util.ChartUtil;
 import util.ConsoleHelper;
-import util.DataPersistenceManager;
+import util.DBConnection;
+import util.MoneyUtil;
 
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.*;
 
@@ -28,7 +30,6 @@ public class Main {
     private static IPortfolioService portfolioService;
     private static ITradingService tradingService;
     private static ReportGenerator reportGenerator;
-    private static DataPersistenceManager persistenceManager;
 
     public static void main(String[] args) {
         initializePlatform();
@@ -56,8 +57,7 @@ public class Main {
                         break;
                     case 3:
                         running = false;
-                        savePlatformData();
-                        ConsoleHelper.printSuccess("All platform data saved. Thank you for trading with us!");
+                        ConsoleHelper.printSuccess("All platform records safely committed in database. Thank you for trading with us!");
                         break;
                     default:
                         ConsoleHelper.printError("Invalid option! Please enter 1, 2, or 3.");
@@ -69,88 +69,21 @@ public class Main {
     }
 
     /**
-     * Bootstraps services, loads persisted data, or seeds default data.
+     * Bootstraps JDBC database and authoritative relational services.
      */
     private static void initializePlatform() {
-        persistenceManager = new DataPersistenceManager();
+        DBConnection.initializeDatabase();
 
-        // 1. Security Service & System Settings Service
-        SecuritySettings secSettings = persistenceManager.loadSecuritySettings();
-        securityService = new SecurityService(secSettings, null);
-
-        SystemSettings sysSettings = persistenceManager.loadSystemSettings();
-        systemSettingsService = new SystemSettingsService(sysSettings);
-
-        // 2. Notifications & Alerts
+        securityService = new SecurityService(new SecuritySettings(), null);
+        systemSettingsService = new SystemSettingsService(new SystemSettings());
         notificationService = new NotificationService();
-
-        // 3. User Service
-        List<User> loadedUsers = persistenceManager.loadUsers();
-        Map<String, User> userMap = new HashMap<>();
-        if (loadedUsers != null && !loadedUsers.isEmpty()) {
-            for (User u : loadedUsers) userMap.put(u.getUserId(), u);
-            userService = new UserService(userMap);
-        } else {
-            userService = new UserService();
-            seedDefaultUsers();
-        }
-
-        // 4. Authentication Service
+        userService = new UserService();
         authService = new AuthenticationService(userService, securityService);
-
-        // 5. Market Update Service & Stocks
-        List<Stock> loadedStocks = persistenceManager.loadStocks();
-        Map<String, Stock> stockMap = new HashMap<>();
-        if (loadedStocks != null && !loadedStocks.isEmpty()) {
-            for (Stock s : loadedStocks) stockMap.put(s.getSymbol(), s);
-            marketUpdateService = new MarketUpdateService(stockMap, null, notificationService);
-        } else {
-            marketUpdateService = new MarketUpdateService(notificationService);
-        }
-
-        // 6. Portfolio Service
-        Map<String, Portfolio> loadedPortfolios = persistenceManager.loadPortfolios();
-        portfolioService = new PortfolioService(loadedPortfolios);
-
-        // 7. Trading Service
-        List<Trade> loadedTrades = persistenceManager.loadTrades();
-        tradingService = new TradingService(marketUpdateService, portfolioService, notificationService, userService, loadedTrades);
-
-        // 8. Report Generator
+        marketUpdateService = new MarketUpdateService(notificationService);
+        portfolioService = new PortfolioService();
+        tradingService = new TradingService(marketUpdateService, portfolioService, notificationService, userService);
         reportGenerator = new ReportGenerator(userService, tradingService, portfolioService,
                 marketUpdateService, securityService, systemSettingsService);
-
-        // Save state initially
-        savePlatformData();
-    }
-
-    private static void seedDefaultUsers() {
-        try {
-            // Default Administrator
-            Admin admin = new Admin("admin", "Platform Administrator", "admin@trade.in", "admin123", "Risk & Operations");
-            userService.createUser(admin);
-
-            // Default Trader 1
-            Trader trader1 = new Trader("trader1", "Trader User", "trader1@trade.in", "trader123", 50000.0);
-            trader1.addToWatchlist("RELIANCE");
-            trader1.addToWatchlist("TCS");
-            userService.createUser(trader1);
-
-            // Default Trader 2
-            Trader trader2 = new Trader("trader2", "Trader 2", "trader2@trade.in", "trader123", 75000.0);
-            trader2.addToWatchlist("INFY");
-            trader2.addToWatchlist("TATAMOTORS");
-            userService.createUser(trader2);
-        } catch (Exception e) {
-            System.err.println("Error seeding default users: " + e.getMessage());
-        }
-    }
-
-    private static void savePlatformData() {
-        if (persistenceManager != null) {
-            persistenceManager.saveAll(userService, marketUpdateService, tradingService,
-                    portfolioService, securityService, systemSettingsService);
-        }
     }
 
     // =========================================================================
@@ -159,10 +92,6 @@ public class Main {
 
     private static void handleLogin() {
         ConsoleHelper.printSubHeader("PLATFORM AUTHENTICATION");
-        System.out.println("Default Logins for Evaluation:");
-        System.out.println("  * Administrator: Username: 'admin'   | Password: 'admin123'");
-        System.out.println("  * Trader 1:      Username: 'trader1' | Password: 'trader123'");
-        System.out.println("  * Trader 2:      Username: 'trader2' | Password: 'trader123'\n");
 
         String usernameOrEmail = ConsoleHelper.readString(scanner, "Enter User ID or Email");
         String password = ConsoleHelper.readString(scanner, "Enter Password");
@@ -223,7 +152,6 @@ public class Main {
                         break;
                     case 7:
                         authService.logout();
-                        savePlatformData();
                         ConsoleHelper.printSuccess("Administrator logged out successfully.");
                         inAdmin = false;
                         break;
@@ -322,7 +250,6 @@ public class Main {
 
         try {
             userService.createUser(newUser);
-            savePlatformData();
             ConsoleHelper.printSuccess("User account '" + id + "' (" + newUser.getRole() + ") created successfully!");
         } catch (DuplicateUserException | InvalidInputException e) {
             ConsoleHelper.printError("Failed to create user: " + e.getMessage());
@@ -346,7 +273,6 @@ public class Main {
                     newEmail.isEmpty() ? null : newEmail,
                     newPass.isEmpty() ? null : newPass);
 
-            savePlatformData();
             ConsoleHelper.printSuccess("User details for '" + id + "' updated successfully!");
         } catch (UserNotFoundException | InvalidInputException e) {
             ConsoleHelper.printError("Failed to update user: " + e.getMessage());
@@ -361,7 +287,6 @@ public class Main {
             String confirm = ConsoleHelper.readString(scanner, "Are you sure you want to delete user '" + existing.getName() + "'? (yes/no)");
             if (confirm.equalsIgnoreCase("yes") || confirm.equalsIgnoreCase("y")) {
                 userService.deleteUser(id);
-                savePlatformData();
                 ConsoleHelper.printSuccess("User account '" + id + "' was deleted successfully!");
             } else {
                 ConsoleHelper.printInfo("Deletion cancelled.");
@@ -389,7 +314,6 @@ public class Main {
             UserRole newRole = (r == 1) ? UserRole.ADMIN : UserRole.TRADER;
 
             userService.updateUserRole(id, newRole);
-            savePlatformData();
             ConsoleHelper.printSuccess("User role for '" + id + "' successfully updated to " + newRole + "!");
         } catch (UserNotFoundException e) {
             ConsoleHelper.printError("Failed to update role: " + e.getMessage());
@@ -484,7 +408,6 @@ public class Main {
         if (threshold > 0) s.setHighValueTradeThreshold(threshold);
 
         securityService.updateSecuritySettings(s);
-        savePlatformData();
         ConsoleHelper.printSuccess("Financial Data Security settings updated successfully!");
     }
 
@@ -541,7 +464,6 @@ public class Main {
                     break;
                 case 2:
                     systemSettingsService.toggleMaintenanceMode();
-                    savePlatformData();
                     ConsoleHelper.printSuccess("Maintenance Mode is now: " +
                             (systemSettingsService.getSettings().isMaintenanceMode() ? "ENABLED (Locked)" : "DISABLED (Normal)"));
                     break;
@@ -552,7 +474,6 @@ public class Main {
                     else if (st == 2) s.setMarketStatus(SystemSettings.MarketStatus.CLOSED);
                     else s.setMarketStatus(SystemSettings.MarketStatus.PRE_MARKET);
                     systemSettingsService.updateSettings(s);
-                    savePlatformData();
                     ConsoleHelper.printSuccess("Market status updated to: " + s.getMarketStatus());
                     break;
                 case 4:
@@ -579,7 +500,6 @@ public class Main {
         if (interval > 0) s.setMarketUpdateIntervalSeconds(interval);
 
         systemSettingsService.updateSettings(s);
-        savePlatformData();
         ConsoleHelper.printSuccess("System configuration updated successfully!");
     }
 
@@ -712,7 +632,6 @@ public class Main {
                         break;
                     case 9:
                         authService.logout();
-                        savePlatformData();
                         ConsoleHelper.printSuccess("Trader session ended safely. Goodbye!");
                         inTrader = false;
                         break;
@@ -754,19 +673,20 @@ public class Main {
             if (stock == null) {
                 throw new StockNotFoundException("Symbol '" + symbol + "' does not exist on the platform.");
             }
-            double totalCost = Math.round((stock.getCurrentPrice() * quantity) * 100.0) / 100.0;
-            System.out.printf("Order Review: BUY %d shares of %s @ $%.2f = Total: $%,.2f%n",
-                    quantity, stock.getSymbol(), stock.getCurrentPrice(), totalCost);
+            BigDecimal totalCost = MoneyUtil.calculateBuyTotal(MoneyUtil.of(stock.getCurrentPrice()), quantity);
+            System.out.printf("Order Review (incl. 0.15%% fee): BUY %d shares of %s @ ₹%.2f = Total: ₹%,.2f%n",
+                    quantity, stock.getSymbol(), stock.getCurrentPrice(), totalCost.doubleValue());
 
             String confirm = ConsoleHelper.readString(scanner, "Confirm execution? (yes/no)");
             if (confirm.equalsIgnoreCase("yes") || confirm.equalsIgnoreCase("y")) {
                 Trade trade = tradingService.executeBuy(trader.getUserId(), symbol, quantity);
-                savePlatformData();
+                User refreshed = userService.getUserById(trader.getUserId());
+                trader.setBalance(refreshed.getBalance());
                 ConsoleHelper.printSuccess("TRADE CONFIRMATION: " + trade);
             } else {
                 ConsoleHelper.printInfo("Buy order cancelled.");
             }
-        } catch (StockNotFoundException | InvalidInputException | InsufficientStockQuantityException e) {
+        } catch (StockNotFoundException | InvalidInputException | InsufficientStockQuantityException | UserNotFoundException e) {
             ConsoleHelper.printError("Order Failed: " + e.getMessage());
         }
     }
@@ -785,7 +705,7 @@ public class Main {
         for (Map.Entry<String, Integer> entry : portfolio.getHoldings().entrySet()) {
             Stock s = marketUpdateService.getStock(entry.getKey());
             double curPrice = (s != null) ? s.getCurrentPrice() : 0.0;
-            System.out.printf(" * %-5s: %d shares owned (Current Market Price: $%.2f)%n",
+            System.out.printf(" * %-5s: %d shares owned (Current Market Price: ₹%.2f)%n",
                     entry.getKey(), entry.getValue(), curPrice);
         }
 
@@ -797,19 +717,20 @@ public class Main {
             if (stock == null) {
                 throw new StockNotFoundException("Stock symbol '" + symbol + "' was not found.");
             }
-            double totalRevenue = Math.round((stock.getCurrentPrice() * quantity) * 100.0) / 100.0;
-            System.out.printf("Order Review: SELL %d shares of %s @ $%.2f = Total Proceeds: $%,.2f%n",
-                    quantity, stock.getSymbol(), stock.getCurrentPrice(), totalRevenue);
+            BigDecimal netProceeds = MoneyUtil.calculateSellNetProceeds(MoneyUtil.of(stock.getCurrentPrice()), quantity);
+            System.out.printf("Order Review (after 0.15%% fee): SELL %d shares of %s @ ₹%.2f = Net Proceeds: ₹%,.2f%n",
+                    quantity, stock.getSymbol(), stock.getCurrentPrice(), netProceeds.doubleValue());
 
             String confirm = ConsoleHelper.readString(scanner, "Confirm execution? (yes/no)");
             if (confirm.equalsIgnoreCase("yes") || confirm.equalsIgnoreCase("y")) {
                 Trade trade = tradingService.executeSell(trader.getUserId(), symbol, quantity);
-                savePlatformData();
+                User refreshed = userService.getUserById(trader.getUserId());
+                trader.setBalance(refreshed.getBalance());
                 ConsoleHelper.printSuccess("TRADE CONFIRMATION: " + trade);
             } else {
                 ConsoleHelper.printInfo("Sell order cancelled.");
             }
-        } catch (StockNotFoundException | InvalidInputException | InsufficientHoldingsException e) {
+        } catch (StockNotFoundException | InvalidInputException | InsufficientHoldingsException | UserNotFoundException e) {
             ConsoleHelper.printError("Order Failed: " + e.getMessage());
         }
     }
@@ -880,7 +801,6 @@ public class Main {
         int opt = ConsoleHelper.readInt(scanner, "Choice [1-2]");
         if (opt == 1) {
             marketUpdateService.simulateMarketTick();
-            savePlatformData();
             ConsoleHelper.printSuccess("Simulated market tick generated! New prices and updates broadcasted.");
         }
     }
@@ -999,26 +919,24 @@ public class Main {
             case 1:
                 String addSym = ConsoleHelper.readString(scanner, "Enter stock symbol to add");
                 trader.addToWatchlist(addSym);
-                savePlatformData();
                 ConsoleHelper.printSuccess("Added '" + addSym.toUpperCase() + "' to watchlist.");
                 break;
             case 2:
                 String remSym = ConsoleHelper.readString(scanner, "Enter stock symbol to remove");
                 trader.removeFromWatchlist(remSym);
-                savePlatformData();
                 ConsoleHelper.printSuccess("Removed '" + remSym.toUpperCase() + "' from watchlist.");
                 break;
             case 3:
                 double thresh = ConsoleHelper.readDouble(scanner, "Enter new alert threshold percent (e.g. 1.5)");
                 if (thresh >= 0) {
                     trader.setAlertThresholdPercent(thresh);
-                    savePlatformData();
+                    userService.updateUser(trader);
                     ConsoleHelper.printSuccess("Market update alert threshold set to " + thresh + "%.");
                 }
                 break;
             case 4:
                 trader.setEmailAlertsEnabled(!trader.isEmailAlertsEnabled());
-                savePlatformData();
+                userService.updateUser(trader);
                 ConsoleHelper.printSuccess("Email alerts status: " + (trader.isEmailAlertsEnabled() ? "ENABLED" : "DISABLED"));
                 break;
             case 5:

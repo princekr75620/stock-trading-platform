@@ -21,8 +21,9 @@ public class MarketTickServlet extends BaseServlet {
             sendJsonResponse(response, HttpServletResponse.SC_OK,
                     "{\"success\":true,\"message\":\"Market prices recalculated across Indian equities.\"}");
         } catch (Exception ex) {
+            System.err.println("[MarketTickServlet] Tick execution error: " + ex.getMessage());
             sendJsonResponse(response, HttpServletResponse.SC_INTERNAL_SERVER_ERROR,
-                    "{\"success\":false,\"error\":\"Market tick failed: " + JsonHelper.escape(ex.getMessage()) + "\"}");
+                    "{\"success\":false,\"error\":\"Internal server error updating market prices.\"}");
         }
     }
 }

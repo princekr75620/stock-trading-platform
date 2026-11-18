@@ -1,9 +1,13 @@
 package test;
 
 import model.Portfolio;
+import model.Stock;
+
+import java.util.HashMap;
+import java.util.Map;
 
 /**
- * Unit Test verifying weighted average cost basis math and holding removals in Portfolio.
+ * Unit Test verifying BigDecimal weighted average cost basis math, P&L calculation, and holding removals in Portfolio.
  */
 public class PortfolioCalculationTest {
 
@@ -11,13 +15,24 @@ public class PortfolioCalculationTest {
     private static int testsPassed = 0;
 
     public static void main(String[] args) {
+        if (!runAll()) {
+            System.exit(1);
+        }
+    }
+
+    public static boolean runAll() {
+        testsRun = 0;
+        testsPassed = 0;
+
         System.out.println(">>> Running PortfolioCalculationTest Suite...");
         testInitialBuyCreatesHolding();
         testAdditionalBuyCalculatesWeightedAverage();
         testPartialSellDecrementsHolding();
         testFullSellRemovesHolding();
+        testBigDecimalWeightedAverageAndUnrealizedPnL();
 
         System.out.printf("PortfolioCalculationTest Results: %d/%d Passed.\n\n", testsPassed, testsRun);
+        return testsPassed == testsRun;
     }
 
     private static void assertTrue(boolean condition, String testName) {
@@ -41,7 +56,6 @@ public class PortfolioCalculationTest {
     }
 
     public static void testAdditionalBuyCalculatesWeightedAverage() {
-        // Buy 10 @ ₹2500 (= ₹25,000), Buy 10 @ ₹3000 (= ₹30,000). Total 20 shares, Total ₹55,000 => Avg ₹2750
         Portfolio p = new Portfolio("trader1");
         p.recordBuy("RELIANCE", 10, 2500.00);
         p.recordBuy("RELIANCE", 10, 3000.00);
@@ -70,5 +84,26 @@ public class PortfolioCalculationTest {
 
         boolean hasKey = p.getHoldings().containsKey("INFY");
         assertTrue(!hasKey, "testFullSellRemovesHolding - Fully sold holding purged from Map");
+    }
+
+    public static void testBigDecimalWeightedAverageAndUnrealizedPnL() {
+        // 3 @ 100.33 (300.99) + 7 @ 200.67 (1404.69) = 1705.68 / 10 = 170.57 (HALF_UP)
+        Portfolio p = new Portfolio("trader1");
+        p.recordBuy("INFY", 3, 100.33);
+        p.recordBuy("INFY", 7, 200.67);
+
+        double avg = p.getAverageBuyPrice("INFY"); // 1705.68 / 10 = 170.57 (HALF_UP)
+        double totalInvest = p.getTotalInvestmentValue(); // exact cost basis sum = 1705.68
+
+        Map<String, Stock> market = new HashMap<>();
+        market.put("INFY", new Stock("INFY", "Infosys", "NSE", 200.57, 1000));
+        double currentVal = p.getCurrentPortfolioValue(market); // 2005.70
+        double unrealized = p.getUnrealizedProfitLoss(market); // 2005.70 - 1705.68 = 300.02
+
+        assertTrue(Math.abs(avg - 170.57) < 0.001
+                        && Math.abs(totalInvest - 1705.68) < 0.001
+                        && Math.abs(currentVal - 2005.70) < 0.001
+                        && Math.abs(unrealized - 300.02) < 0.001,
+                "testBigDecimalWeightedAverageAndUnrealizedPnL - Exact BigDecimal cost basis & P&L math");
     }
 }

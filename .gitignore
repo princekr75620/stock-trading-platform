@@ -7,5 +7,14 @@ target/
 coverage/
 .DS_Store
 *.log
-.env*
+*.env*
 !.env.example
+.env
+cookies*.txt
+*.pem
+*.key
+data/*.txt
+data/*.db
+data/*.db-wal
+data/*.db-shm
+data/*.db-journal

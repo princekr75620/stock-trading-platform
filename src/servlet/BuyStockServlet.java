@@ -10,17 +10,15 @@ import javax.servlet.ServletException;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 import java.io.IOException;
-import java.sql.SQLException;
 import java.util.Map;
 
 /**
  * Servlet handling BUY Stock orders.
  * Workflow:
- * 1. Validate request and input parameters
- * 2. Get logged-in user from HttpSession
- * 3. Call TradingService to execute transactional Buy (with ACID JDBC commit/rollback)
+ * 1. Validate session user and input parameters (derives traderId strictly from session)
+ * 2. Extract optional Idempotency-Key header / idempotencyKey body parameter
+ * 3. Call TradingService to execute transactional Buy (ACID JDBC commit/rollback + BigDecimal fees)
  * 4. Return updated trade details and portfolio state
- * Fulfills Buy Stock Functionality (Rubric Section 8 & 10) for GUVI Evaluation.
  */
 public class BuyStockServlet extends BaseServlet {
     private static final long serialVersionUID = 1L;
@@ -29,7 +27,6 @@ public class BuyStockServlet extends BaseServlet {
     protected void doPost(HttpServletRequest request, HttpServletResponse response)
             throws ServletException, IOException {
 
-        // 1. Validate input
         Map<String, String> body = parseJsonBody(request);
 
         String symbol = body.get("symbol");
@@ -38,7 +35,7 @@ public class BuyStockServlet extends BaseServlet {
         String qtyStr = body.get("quantity");
         if (qtyStr == null) qtyStr = request.getParameter("quantity");
 
-        // 2. Get logged-in user strictly from server-side session
+        // Strictly derive authenticated traderId from server-side session
         User sessionUser = getAuthenticatedUser(request);
         if (sessionUser == null) {
             sendJsonResponse(response, HttpServletResponse.SC_UNAUTHORIZED,
@@ -46,17 +43,19 @@ public class BuyStockServlet extends BaseServlet {
             return;
         }
 
-        String traderId = sessionUser.getUserId();
         String requestedTraderId = body.get("traderId");
         if (requestedTraderId == null) requestedTraderId = request.getParameter("traderId");
-        if (requestedTraderId != null && !requestedTraderId.trim().isEmpty()) {
-            if (sessionUser.getRole() == model.UserRole.ADMIN) {
-                traderId = requestedTraderId.trim();
-            } else if (!sessionUser.getUserId().equalsIgnoreCase(requestedTraderId.trim())) {
-                sendJsonResponse(response, HttpServletResponse.SC_FORBIDDEN,
-                        "{\"success\":false,\"error\":\"Access denied: Cannot execute trades on another user's account.\"}");
-                return;
-            }
+        if (requestedTraderId != null && !requestedTraderId.trim().isEmpty()
+                && !sessionUser.getUserId().equalsIgnoreCase(requestedTraderId.trim())) {
+            sendJsonResponse(response, HttpServletResponse.SC_FORBIDDEN,
+                    "{\"success\":false,\"error\":\"Access denied: Cannot execute trades on another user's account.\"}");
+            return;
+        }
+        String traderId = sessionUser.getUserId().trim();
+
+        String idempotencyKey = request.getHeader("Idempotency-Key");
+        if (idempotencyKey == null || idempotencyKey.trim().isEmpty()) {
+            idempotencyKey = body.get("idempotencyKey");
         }
 
         if (symbol == null || symbol.trim().isEmpty()) {
@@ -79,16 +78,14 @@ public class BuyStockServlet extends BaseServlet {
             return;
         }
 
-        // 3. Invoke Service Layer (executes ACID JDBC transaction: check stock, check balance, deduct, update portfolio, insert transaction, commit/rollback)
+        String normalizedSymbol = symbol.toUpperCase().trim();
         try {
-            model.Transaction tx = tradingService.executeBuyTransaction(traderId.trim(), symbol.toUpperCase().trim(), quantity);
-            model.Stock st = marketUpdateService.getStock(symbol.toUpperCase().trim());
-            Trade trade = tx.toTrade(st != null ? st.getName() : symbol.toUpperCase().trim());
+            model.Transaction tx = tradingService.executeBuyTransaction(traderId, normalizedSymbol, quantity, idempotencyKey);
+            model.Stock st = marketUpdateService.getStock(normalizedSymbol);
+            Trade trade = tx.toTrade(st != null ? st.getName() : normalizedSymbol);
 
-            // Fetch updated trader & portfolio from database
-            String resolvedTraderId = traderId.trim();
-            Portfolio portfolio = portfolioService.getOrCreatePortfolio(resolvedTraderId);
-            User freshUser = userService.getUserById(resolvedTraderId);
+            Portfolio portfolio = portfolioService.getOrCreatePortfolio(traderId);
+            User freshUser = userService.getUserById(traderId);
             model.Trader freshTrader = (freshUser instanceof model.Trader) ? (model.Trader) freshUser : null;
             if (freshUser != null && sessionUser.getUserId().equalsIgnoreCase(freshUser.getUserId())) {
                 javax.servlet.http.HttpSession session = request.getSession(false);
@@ -98,12 +95,15 @@ public class BuyStockServlet extends BaseServlet {
             }
 
             String json = String.format("{\"success\":true,\"message\":\"Successfully purchased %d shares of %s.\",\"trade\":%s,\"portfolio\":%s}",
-                    quantity, symbol.toUpperCase().trim(),
+                    quantity, normalizedSymbol,
                     JsonHelper.tradeToJson(trade),
                     JsonHelper.portfolioToJson(portfolio, freshTrader, marketUpdateService.getStockMap()));
 
             sendJsonResponse(response, HttpServletResponse.SC_OK, json);
 
+        } catch (DuplicateOrderException e) {
+            sendJsonResponse(response, HttpServletResponse.SC_CONFLICT,
+                    String.format("{\"success\":false,\"error\":\"%s\"}", JsonHelper.escape(e.getMessage())));
         } catch (InvalidStockException e) {
             sendJsonResponse(response, HttpServletResponse.SC_NOT_FOUND,
                     String.format("{\"success\":false,\"error\":\"%s\"}", JsonHelper.escape(e.getMessage())));
@@ -117,8 +117,9 @@ public class BuyStockServlet extends BaseServlet {
             sendJsonResponse(response, HttpServletResponse.SC_BAD_REQUEST,
                     String.format("{\"success\":false,\"error\":\"%s\"}", JsonHelper.escape(e.getMessage())));
         } catch (Exception e) {
+            System.err.println("[BuyStockServlet] Unexpected trade execution error: " + e.getMessage());
             sendJsonResponse(response, HttpServletResponse.SC_INTERNAL_SERVER_ERROR,
-                    String.format("{\"success\":false,\"error\":\"Trade execution failed: %s\"}", JsonHelper.escape(e.getMessage())));
+                    "{\"success\":false,\"error\":\"Internal server error executing buy order.\"}");
         }
     }
 }

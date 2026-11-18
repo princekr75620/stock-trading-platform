@@ -3,39 +3,23 @@ package test;
 import exception.*;
 import filter.AuthenticationFilter;
 import model.*;
+import server.ServletBridge;
 import service.*;
-import util.BCrypt;
 import util.PasswordHasher;
 
-import javax.servlet.FilterChain;
-import javax.servlet.ServletException;
-import javax.servlet.ServletRequest;
-import javax.servlet.ServletResponse;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 import javax.servlet.http.HttpSession;
 import java.io.BufferedReader;
-import java.io.IOException;
 import java.io.PrintWriter;
 import java.io.StringReader;
 import java.io.StringWriter;
-import java.lang.reflect.InvocationHandler;
-import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Comprehensive Security, Authentication, and Authorization Test Suite.
- * Covers:
- * 1. Valid login & invalid login (generic error message, no account enumeration)
- * 2. BCrypt password hashing & timing-safe verification
- * 3. Normal users denied admin access (HTTP 403)
- * 4. Forged admin headers (X-User-Id: admin) strictly rejected
- * 5. Session handling, session fixation prevention, and logout invalidation
- * 6. Cross-tenant portfolio isolation (unauthorized access blocked)
- * 7. Invalid trade requests (negative qty, insufficient balance, unlisted stocks)
- * 8. Transparent legacy password migration to BCrypt
+ * Comprehensive Security, Authentication, Authorization, CSRF, and Session Hardening Test Suite.
  */
 public class SecurityAndAuthTest {
     private static int testsPassed = 0;
@@ -52,6 +36,15 @@ public class SecurityAndAuthTest {
     }
 
     public static void main(String[] args) {
+        if (!runAll()) {
+            System.exit(1);
+        }
+    }
+
+    public static boolean runAll() {
+        testsPassed = 0;
+        testsTotal = 0;
+
         System.out.println(">>> Running SecurityAndAuthTest Suite...");
         testPasswordHashingAndVerification();
         testLegacyPasswordMigration();
@@ -60,14 +53,15 @@ public class SecurityAndAuthTest {
         testRegistrationAdminPrivilegeEscalationPrevented();
         testNormalUserDeniedAdminAccess();
         testForgedAdminHeadersRejected();
-        testSessionHandlingAndLogout();
+        testStrictCsrfAndLogoutEnforcement();
+        testCrossSessionAndMethodCsrfProtection();
+        testSessionHandlingFixationAndExpiry();
+        testNoPlaintextPersistenceOrJsonLeak();
         testPortfolioCrossTenantIsolation();
         testInvalidTradeRequests();
 
         System.out.printf("SecurityAndAuthTest Results: %d/%d Passed.\n\n", testsPassed, testsTotal);
-        if (testsPassed != testsTotal) {
-            System.exit(1);
-        }
+        return testsPassed == testsTotal;
     }
 
     public static void testPasswordHashingAndVerification() {
@@ -81,7 +75,6 @@ public class SecurityAndAuthTest {
     }
 
     public static void testLegacyPasswordMigration() {
-        // 1. Unflagged plaintext stored in password column MUST be strictly rejected
         String rawLegacyPass = "legacyPlaintext123";
         assertTrue(!PasswordHasher.verifyPassword(rawLegacyPass, rawLegacyPass),
                 "testLegacyPasswordMigration - General verifyPassword rejects unflagged plaintext password");
@@ -102,7 +95,6 @@ public class SecurityAndAuthTest {
         }
         assertTrue(unflaggedRejected, "testLegacyPasswordMigration - Normal login strictly rejects unflagged plaintext password");
 
-        // 2. Explicitly legacy-marked record ($LEGACY$ prefix) succeeds once and upgrades to BCrypt
         String legacyMarked = PasswordHasher.markLegacyPassword(rawLegacyPass);
         User legacyUser = new Trader("migratedTrader", "Migrated User", "migrate@trade.in", legacyMarked, 50000.0);
         Map<String, User> userMap = new HashMap<>();
@@ -135,24 +127,19 @@ public class SecurityAndAuthTest {
         IUserService userService = new UserService(userMap);
         AuthenticationService authService = new AuthenticationService(userService, null);
 
-        // Valid login
         boolean loginSuccess = false;
         try {
             User u = authService.login("valid@trade.in", rawPass);
             loginSuccess = (u != null && u.getUserId().equals("validTrader"));
-        } catch (Exception e) {
-            loginSuccess = false;
-        }
+        } catch (Exception ignored) {}
         assertTrue(loginSuccess, "testValidLogin - Successfully authenticates with valid credentials");
 
-        // Invalid login: bad password
         String errorBadPassword = "";
         try {
             authService.login("valid@trade.in", "WrongPassword!");
         } catch (InvalidLoginException e) {
             errorBadPassword = e.getMessage();
         }
-        // Invalid login: unknown user
         String errorUnknownUser = "";
         try {
             authService.login("nonexistent@trade.in", "AnyPassword");
@@ -160,7 +147,6 @@ public class SecurityAndAuthTest {
             errorUnknownUser = e.getMessage();
         }
 
-        // Generic error message check (OWASP Authentication Cheat Sheet: identical message prevents user enumeration)
         assertTrue(errorBadPassword.equals("Invalid username/email or password."),
                 "testInvalidLogin - Returns generic message on bad password");
         assertTrue(errorUnknownUser.equals("Invalid username/email or password."),
@@ -181,14 +167,12 @@ public class SecurityAndAuthTest {
         IUserService userService = new UserService(userMap);
         AuthenticationService authService = new AuthenticationService(userService, secService);
 
-        // 3 failed attempts
         for (int i = 0; i < 3; i++) {
             try {
                 authService.login("lockoutUser", "wrongPass" + i);
             } catch (InvalidLoginException ignored) {}
         }
 
-        // 4th attempt should be blocked by account lockout
         boolean locked = false;
         try {
             authService.login("lockoutUser", "correct123");
@@ -206,11 +190,11 @@ public class SecurityAndAuthTest {
         );
 
         String hackerUid = "hacker_" + System.currentTimeMillis();
-        // Attempt 1: Client submits role: ADMIN via JSON payload
         MockHttpServletRequest requestWithAdminRole = new MockHttpServletRequest("POST", "/api/auth/register", null);
         requestWithAdminRole.headers.put("Content-Type", "application/json");
-        requestWithAdminRole.headers.put("X-Requested-With", "XMLHttpRequest");
-        requestWithAdminRole.body = String.format("{\"userId\":\"%s\",\"name\":\"Hacker\",\"email\":\"%s@test.com\",\"password\":\"HackerPass123!\",\"role\":\"ADMIN\",\"initialBalance\":99999999}", hackerUid, hackerUid);
+        requestWithAdminRole.body = String.format(
+                "{\"userId\":\"%s\",\"name\":\"Hacker\",\"email\":\"%s@test.com\",\"password\":\"HackerPass123!\",\"role\":\"ADMIN\",\"initialBalance\":99999999}",
+                hackerUid, hackerUid);
         MockHttpServletResponse response1 = new MockHttpServletResponse();
 
         try {
@@ -232,6 +216,8 @@ public class SecurityAndAuthTest {
                 "testRegistrationAdminPrivilegeEscalation - Public registration strictly denied ADMIN role");
         assertTrue(createdUser != null && createdUser.getBalance() == 50000.0,
                 "testRegistrationAdminPrivilegeEscalation - Client-supplied initialBalance 99999999 rejected; default 50000.0 enforced");
+        assertTrue(response1.body.toString().contains("\"csrfToken\""),
+                "testRegistrationAdminPrivilegeEscalation - Registration response issues session csrfToken");
     }
 
     public static void testNormalUserDeniedAdminAccess() {
@@ -245,7 +231,6 @@ public class SecurityAndAuthTest {
         MockHttpServletRequest request = new MockHttpServletRequest("GET", "/api/admin/users", session);
         MockHttpServletResponse response = new MockHttpServletResponse();
 
-        boolean reachedChain = false;
         try {
             filter.doFilter(request.toProxy(), response.toProxy(), (req, resp) -> {});
         } catch (Exception e) {
@@ -261,7 +246,6 @@ public class SecurityAndAuthTest {
         AuthenticationFilter filter = new AuthenticationFilter();
         try { filter.init(null); } catch (Exception ignored) {}
 
-        // Attacker attempts to forge X-User-Id: admin without an authenticated admin session
         MockHttpServletRequest requestWithForgedHeader = new MockHttpServletRequest("GET", "/api/admin/users", null);
         requestWithForgedHeader.headers.put("X-User-Id", "admin");
         requestWithForgedHeader.headers.put("X-Admin", "true");
@@ -273,7 +257,6 @@ public class SecurityAndAuthTest {
 
         assertTrue(response.status == 401, "testForgedAdminHeadersRejected - Forged header X-User-Id: admin rejected without session (HTTP 401)");
 
-        // Attacker is logged in as TRADER and sends X-User-Id: admin header
         User normalTrader = new Trader("attackerTrader", "Attacker", "att@trade.in", "hash", 50000.0);
         MockSession traderSession = new MockSession("sess-att");
         traderSession.setAttribute("user", normalTrader);
@@ -289,30 +272,195 @@ public class SecurityAndAuthTest {
         assertTrue(response2.status == 403, "testForgedAdminHeadersRejected - TRADER with forged admin header strictly denied (HTTP 403)");
     }
 
-    public static void testSessionHandlingAndLogout() {
+    public static void testStrictCsrfAndLogoutEnforcement() {
+        AuthenticationFilter filter = new AuthenticationFilter();
+        try { filter.init(null); } catch (Exception ignored) {}
+
+        User trader = new Trader("csrfUser", "CSRF Tester", "csrf@trade.in", "hash", 50000.0);
+        MockSession session = new MockSession("sess-csrf");
+        session.setAttribute("user", trader);
+        session.setAttribute("csrfToken", "expected-csrf-secret-token");
+
+        try {
+            // 1. Missing CSRF token rejected (403)
+            MockHttpServletRequest missingCsrf = new MockHttpServletRequest("POST", "/api/trades/buy", session);
+            missingCsrf.headers.put("Origin", "http://localhost:3000");
+            MockHttpServletResponse resp1 = new MockHttpServletResponse();
+            filter.doFilter(missingCsrf.toProxy(), resp1.toProxy(), (req, resp) -> {});
+            assertTrue(resp1.status == 403, "testStrictCsrf - Missing X-CSRF-Token blocked (403)");
+
+            // 2. Legacy X-Requested-With / Content-Type: application/json bypasses NO LONGER accepted (403)
+            MockHttpServletRequest legacyBypass = new MockHttpServletRequest("POST", "/api/trades/buy", session);
+            legacyBypass.headers.put("Content-Type", "application/json");
+            legacyBypass.headers.put("X-Requested-With", "XMLHttpRequest");
+            legacyBypass.headers.put("Origin", "http://localhost:3000");
+            MockHttpServletResponse resp2 = new MockHttpServletResponse();
+            filter.doFilter(legacyBypass.toProxy(), resp2.toProxy(), (req, resp) -> {});
+            assertTrue(resp2.status == 403, "testStrictCsrf - X-Requested-With & Content-Type bypasses rejected without CSRF token (403)");
+
+            // 3. Mismatched CSRF token rejected (403)
+            MockHttpServletRequest wrongCsrf = new MockHttpServletRequest("POST", "/api/trades/buy", session);
+            wrongCsrf.headers.put("X-CSRF-Token", "wrong-token");
+            wrongCsrf.headers.put("Origin", "http://localhost:3000");
+            MockHttpServletResponse resp3 = new MockHttpServletResponse();
+            filter.doFilter(wrongCsrf.toProxy(), resp3.toProxy(), (req, resp) -> {});
+            assertTrue(resp3.status == 403, "testStrictCsrf - Invalid X-CSRF-Token rejected (403)");
+
+            // 4. Untrusted Origin rejected even with valid CSRF token (403)
+            MockHttpServletRequest evilOrigin = new MockHttpServletRequest("POST", "/api/trades/buy", session);
+            evilOrigin.headers.put("X-CSRF-Token", "expected-csrf-secret-token");
+            evilOrigin.headers.put("Origin", "https://attacker.example.com");
+            MockHttpServletResponse resp4 = new MockHttpServletResponse();
+            filter.doFilter(evilOrigin.toProxy(), resp4.toProxy(), (req, resp) -> {});
+            assertTrue(resp4.status == 403, "testStrictCsrf - Untrusted Origin header rejected (403)");
+
+            // 5. Valid CSRF token + trusted Origin succeeds (200)
+            MockHttpServletRequest validReq = new MockHttpServletRequest("POST", "/api/trades/buy", session);
+            validReq.headers.put("X-CSRF-Token", "expected-csrf-secret-token");
+            validReq.headers.put("Origin", "http://localhost:3000");
+            MockHttpServletResponse resp5 = new MockHttpServletResponse();
+            final boolean[] passed = {false};
+            filter.doFilter(validReq.toProxy(), resp5.toProxy(), (req, resp) -> passed[0] = true);
+            assertTrue(passed[0] && resp5.status == 200, "testStrictCsrf - Valid session CSRF token & trusted Origin passes filter");
+
+            // 6. GET /api/auth/logout strictly rejected (405)
+            MockHttpServletRequest getLogout = new MockHttpServletRequest("GET", "/api/auth/logout", session);
+            MockHttpServletResponse resp6 = new MockHttpServletResponse();
+            filter.doFilter(getLogout.toProxy(), resp6.toProxy(), (req, resp) -> {});
+            assertTrue(resp6.status == 405, "testStrictCsrf - GET /api/auth/logout rejected with 405 Method Not Allowed");
+
+        } catch (Exception e) {
+            e.printStackTrace();
+            assertTrue(false, "testStrictCsrf - Unexpected exception: " + e.getMessage());
+        }
+    }
+
+    public static void testCrossSessionAndMethodCsrfProtection() {
+        AuthenticationFilter filter = new AuthenticationFilter();
+        try { filter.init(null); } catch (Exception ignored) {}
+
+        User admin = new Admin("adminCsrf", "Admin CSRF", "adm@trade.in", "hash", "Ops");
+        MockSession sessionA = new MockSession("sess-A");
+        sessionA.setAttribute("user", admin);
+        sessionA.setAttribute("csrfToken", "token-belongs-to-session-A");
+
+        MockSession sessionB = new MockSession("sess-B");
+        sessionB.setAttribute("user", admin);
+        sessionB.setAttribute("csrfToken", "token-belongs-to-session-B");
+
+        try {
+            // 1. Cross-session CSRF token submitted by Session B rejected (403)
+            MockHttpServletRequest crossReq = new MockHttpServletRequest("POST", "/api/admin/users", sessionB);
+            crossReq.headers.put("Origin", "http://localhost:3000");
+            crossReq.headers.put("X-CSRF-Token", "token-belongs-to-session-A");
+            MockHttpServletResponse crossResp = new MockHttpServletResponse();
+            filter.doFilter(crossReq.toProxy(), crossResp.toProxy(), (req, resp) -> {});
+            assertTrue(crossResp.status == 403,
+                    "testCrossSessionAndMethodCsrfProtection - Session B submitting Session A CSRF token rejected (403)");
+
+            // 2. Protected PUT & DELETE without CSRF rejected (403), with valid CSRF allowed (200)
+            for (String method : new String[]{"PUT", "DELETE"}) {
+                MockHttpServletRequest noTokenReq = new MockHttpServletRequest(method, "/api/admin/users", sessionA);
+                noTokenReq.headers.put("Origin", "http://localhost:3000");
+                MockHttpServletResponse noTokenResp = new MockHttpServletResponse();
+                filter.doFilter(noTokenReq.toProxy(), noTokenResp.toProxy(), (req, resp) -> {});
+                assertTrue(noTokenResp.status == 403,
+                        "testCrossSessionAndMethodCsrfProtection - " + method + " without CSRF token rejected (403)");
+
+                MockHttpServletRequest okReq = new MockHttpServletRequest(method, "/api/admin/users", sessionA);
+                okReq.headers.put("Origin", "http://localhost:3000");
+                okReq.headers.put("X-CSRF-Token", "token-belongs-to-session-A");
+                MockHttpServletResponse okResp = new MockHttpServletResponse();
+                final boolean[] passed = {false};
+                filter.doFilter(okReq.toProxy(), okResp.toProxy(), (req, resp) -> passed[0] = true);
+                assertTrue(passed[0] && okResp.status == 200,
+                        "testCrossSessionAndMethodCsrfProtection - " + method + " with valid session CSRF token permitted");
+            }
+
+            // 3. Expired / invalidated session cannot POST even with old CSRF token (401)
+            sessionA.invalidate();
+            MockHttpServletRequest expiredPost = new MockHttpServletRequest("POST", "/api/trades/buy", sessionA);
+            expiredPost.headers.put("Origin", "http://localhost:3000");
+            expiredPost.headers.put("X-CSRF-Token", "token-belongs-to-session-A");
+            MockHttpServletResponse expiredResp = new MockHttpServletResponse();
+            filter.doFilter(expiredPost.toProxy(), expiredResp.toProxy(), (req, resp) -> {});
+            assertTrue(expiredResp.status == 401,
+                    "testCrossSessionAndMethodCsrfProtection - Expired/invalidated session rejected on POST even with old CSRF token (401)");
+        } catch (Exception e) {
+            assertTrue(false, "testCrossSessionAndMethodCsrfProtection - Unexpected error: " + e.getMessage());
+        }
+    }
+
+    public static void testNoPlaintextPersistenceOrJsonLeak() {
+        boolean legacyTxtExists = new java.io.File("data/users.txt").exists();
+        assertTrue(!legacyTxtExists, "testNoPlaintextPersistenceOrJsonLeak - No data/users.txt plaintext credential file exists");
+
+        boolean dpmRemoved = false;
+        try {
+            Class.forName("util.DataPersistenceManager");
+        } catch (ClassNotFoundException e) {
+            dpmRemoved = true;
+        }
+        assertTrue(dpmRemoved, "testNoPlaintextPersistenceOrJsonLeak - Legacy plaintext DataPersistenceManager is completely removed");
+
+        String secretHash = PasswordHasher.hashPassword("TopSecretPlain99!");
+        User u = new Trader("jsonSafe", "Safe User", "safe@trade.in", secretHash, 25000.0);
+        String json = server.JsonHelper.userToJson(u);
+        assertTrue(!json.contains("TopSecretPlain99!") && !json.contains("$2a$") && !json.contains("\"password\""),
+                "testNoPlaintextPersistenceOrJsonLeak - JsonHelper.userToJson never leaks password or BCrypt hash");
+    }
+
+    public static void testSessionHandlingFixationAndExpiry() {
         MockSession session = new MockSession("session-100");
-        User user = new Trader("sessionUser", "Session User", "sess@trade.in", "hash", 50000.0);
+        User user = new Trader("sessionUser", "Session User", "sess@trade.in", PasswordHasher.hashPassword("SecretPass1!"), 50000.0);
         session.setAttribute("user", user);
 
         assertTrue(session.getAttribute("user") != null, "testSessionHandling - Session stores authenticated user");
         assertTrue(session.isValid(), "testSessionHandling - Session is active before logout");
 
-        // Invalidate on logout
+        // Session fixation check via LoginServlet
+        Map<String, User> userMap = new HashMap<>();
+        userMap.put(user.getUserId(), user);
+        IUserService us = new UserService(userMap);
+        IAuthenticationService as = new AuthenticationService(us, null);
+        servlet.BaseServlet.initializeServices(us, null, null, null, null, null, null, null, as);
+        servlet.LoginServlet loginServlet = new servlet.LoginServlet();
+
+        MockSession preLoginSess = new MockSession("fixed-old-id");
+        MockHttpServletRequest loginReq = new MockHttpServletRequest("POST", "/api/auth/login", preLoginSess);
+        loginReq.body = "{\"usernameOrEmail\":\"sessionUser\",\"password\":\"SecretPass1!\"}";
+        MockHttpServletResponse loginResp = new MockHttpServletResponse();
+        try {
+            loginServlet.service(loginReq.toProxy(), loginResp.toProxy());
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+        assertTrue(!preLoginSess.isValid() && loginReq.session != null
+                        && !"fixed-old-id".equals(loginReq.session.getId())
+                        && loginResp.body.toString().contains("\"csrfToken\""),
+                "testSessionHandlingFixationAndExpiry - Login invalidates prior session, rotates ID & issues CSRF token");
+
+        // Real ServletBridgeSession timeout expiration check
+        ServletBridge.ServletBridgeSession expiring = new ServletBridge.ServletBridgeSession("exp-test", 1);
+        assertTrue(!expiring.isExpired(), "testSessionHandlingFixationAndExpiry - Fresh session is not expired");
+        try {
+            Thread.sleep(1150);
+        } catch (InterruptedException ignored) {}
+        assertTrue(expiring.isExpired(), "testSessionHandlingFixationAndExpiry - Session expires cleanly after inactivity timeout");
+
         session.invalidate();
-        assertTrue(!session.isValid(), "testSessionHandlingAndLogout - Session invalidated on logout");
-        assertTrue(session.getAttribute("user") == null, "testSessionHandlingAndLogout - User attribute purged upon session invalidation");
+        assertTrue(!session.isValid() && session.getAttribute("user") == null,
+                "testSessionHandlingFixationAndExpiry - Session invalidated on logout");
     }
 
     public static void testPortfolioCrossTenantIsolation() {
         AuthenticationFilter filter = new AuthenticationFilter();
         try { filter.init(null); } catch (Exception ignored) {}
 
-        // Trader1 is logged in
         User trader1 = new Trader("trader1", "Trader One", "trader1@trade.in", "hash", 50000.0);
         MockSession session1 = new MockSession("sess-t1");
         session1.setAttribute("user", trader1);
 
-        // Trader1 attempts to access Trader2's portfolio
         MockHttpServletRequest requestCrossTenant = new MockHttpServletRequest("GET", "/api/portfolio", session1);
         requestCrossTenant.parameters.put("traderId", "trader2");
         MockHttpServletResponse responseCrossTenant = new MockHttpServletResponse();
@@ -326,16 +474,13 @@ public class SecurityAndAuthTest {
         assertTrue(responseCrossTenant.body.toString().contains("not authorized to view another user's portfolio"),
                 "testPortfolioCrossTenantIsolation - Appropriate cross-tenant access denied message");
 
-        // Trader1 accessing their own portfolio is permitted
         MockHttpServletRequest requestOwn = new MockHttpServletRequest("GET", "/api/portfolio", session1);
         requestOwn.parameters.put("traderId", "trader1");
         MockHttpServletResponse responseOwn = new MockHttpServletResponse();
 
         boolean reachedFilterOwn = false;
         try {
-            filter.doFilter(requestOwn.toProxy(), responseOwn.toProxy(), (req, resp) -> {
-                // Filter permitted access to downstream servlet
-            });
+            filter.doFilter(requestOwn.toProxy(), responseOwn.toProxy(), (req, resp) -> {});
             reachedFilterOwn = (responseOwn.status == 200);
         } catch (Exception ignored) {}
 
@@ -345,8 +490,8 @@ public class SecurityAndAuthTest {
     public static void testInvalidTradeRequests() {
         User trader = new Trader("tradeTestUser", "Trade Tester", "test@trade.in", "hash", 10000.0);
         Stock stock = new Stock("TCS", "Tata Consultancy Services", "NSE", 4000.0, 100);
+        stock.setStatus("ACTIVE");
 
-        // Zero quantity
         boolean zeroQtyRejected = false;
         try {
             TradingValidator.validateBuyOrder(trader, stock, 0);
@@ -355,7 +500,6 @@ public class SecurityAndAuthTest {
         } catch (Exception ignored) {}
         assertTrue(zeroQtyRejected, "testInvalidTradeRequests - Zero share order rejected with InvalidInputException");
 
-        // Negative quantity
         boolean negativeQtyRejected = false;
         try {
             TradingValidator.validateBuyOrder(trader, stock, -5);
@@ -364,29 +508,24 @@ public class SecurityAndAuthTest {
         } catch (Exception ignored) {}
         assertTrue(negativeQtyRejected, "testInvalidTradeRequests - Negative share order rejected with InvalidInputException");
 
-        // Exceeding trader balance
         boolean insufficientBalance = false;
         try {
-            TradingValidator.validateBuyOrder(trader, stock, 10); // costs 40,000 > 10,000 balance
+            TradingValidator.validateBuyOrder(trader, stock, 10);
         } catch (InsufficientBalanceException e) {
             insufficientBalance = true;
         } catch (Exception ignored) {}
         assertTrue(insufficientBalance, "testInvalidTradeRequests - Order exceeding cash balance caught InsufficientBalanceException");
 
-        // Exceeding available market float
         boolean insufficientStock = false;
         try {
             trader.setBalance(1000000.0);
-            TradingValidator.validateBuyOrder(trader, stock, 500); // requested 500 > 100 available
+            TradingValidator.validateBuyOrder(trader, stock, 500);
         } catch (InsufficientStockQuantityException e) {
             insufficientStock = true;
         } catch (Exception ignored) {}
         assertTrue(insufficientStock, "testInvalidTradeRequests - Order exceeding available float caught InsufficientStockQuantityException");
     }
 
-    // =========================================================================
-    // IN-MEMORY MOCKS FOR FILTER & SERVLET ISOLATED UNIT TESTING
-    // =========================================================================
     static class MockSession {
         final String id;
         final Map<String, Object> attributes = new ConcurrentHashMap<>();
@@ -430,6 +569,14 @@ public class SecurityAndAuthTest {
             this.session = session;
         }
 
+        private String lookupHeader(String target) {
+            if (target == null) return null;
+            for (Map.Entry<String, String> e : headers.entrySet()) {
+                if (e.getKey().equalsIgnoreCase(target)) return e.getValue();
+            }
+            return null;
+        }
+
         public HttpServletRequest toProxy() {
             return (HttpServletRequest) Proxy.newProxyInstance(
                     HttpServletRequest.class.getClassLoader(),
@@ -438,13 +585,18 @@ public class SecurityAndAuthTest {
                         switch (m.getName()) {
                             case "getMethod": return method;
                             case "getRequestURI": return uri;
-                            case "getHeader": return headers.get(args[0]);
+                            case "getScheme": return "http";
+                            case "getServerName": return "localhost";
+                            case "getHeader": return lookupHeader((String) args[0]);
                             case "getParameter": return parameters.get(args[0]);
                             case "getReader": return new BufferedReader(new StringReader(body != null ? body : ""));
                             case "getSession":
                                 boolean create = (args != null && args.length > 0) ? (Boolean) args[0] : true;
+                                if (session != null && !session.isValid()) {
+                                    session = null;
+                                }
                                 if (session == null && create) {
-                                    session = new MockSession("sess-auto-" + System.currentTimeMillis());
+                                    session = new MockSession("sess-auto-" + System.nanoTime());
                                 }
                                 if (session != null && session.isValid()) return session.toProxy();
                                 return null;

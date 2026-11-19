@@ -1,8 +1,10 @@
 package model;
 
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.HashSet;
 import java.util.Set;
+import util.MoneyUtil;
 
 /**
  * Trader user who buys/sells stocks, manages portfolio, and configures alert preferences.
@@ -19,6 +21,7 @@ public class Trader extends User {
     public Trader(String userId, String name, String email, String password, double initialBalance) {
         super(userId, name, email, password, UserRole.TRADER);
         this.cashBalance = initialBalance;
+        super.setBalance(initialBalance);
         this.watchlist = new HashSet<>();
         this.alertThresholdPercent = 2.0; // Default 2% threshold
         this.emailAlertsEnabled = true;
@@ -29,6 +32,7 @@ public class Trader extends User {
                   LocalDateTime createdAt) {
         super(userId, name, email, password, UserRole.TRADER, createdAt);
         this.cashBalance = initialBalance;
+        super.setBalance(initialBalance);
         this.watchlist = (watchlist != null) ? watchlist : new HashSet<>();
         this.alertThresholdPercent = alertThresholdPercent;
         this.emailAlertsEnabled = emailAlertsEnabled;
@@ -46,9 +50,20 @@ public class Trader extends User {
     }
 
     @Override
+    public BigDecimal getBalanceDecimal() {
+        return super.getBalanceDecimal();
+    }
+
+    @Override
     public void setBalance(double balance) {
         this.cashBalance = balance;
         super.setBalance(balance);
+    }
+
+    @Override
+    public void setBalanceDecimal(BigDecimal balanceDecimal) {
+        super.setBalanceDecimal(balanceDecimal);
+        this.cashBalance = super.getBalance();
     }
 
     public double getCashBalance() {
@@ -56,22 +71,28 @@ public class Trader extends User {
     }
 
     public void deposit(double amount) {
-        if (amount > 0) {
-            this.cashBalance += amount;
+        if (amount > 0 && Double.isFinite(amount)) {
+            BigDecimal updated = getBalanceDecimal().add(MoneyUtil.of(amount));
+            setBalanceDecimal(updated);
         }
     }
 
     public boolean deductCash(double amount) {
-        if (amount > 0 && this.cashBalance >= amount) {
-            this.cashBalance -= amount;
-            return true;
+        if (amount > 0 && Double.isFinite(amount)) {
+            BigDecimal decAmt = MoneyUtil.of(amount);
+            BigDecimal current = getBalanceDecimal();
+            if (current.compareTo(decAmt) >= 0) {
+                setBalanceDecimal(current.subtract(decAmt));
+                return true;
+            }
         }
         return false;
     }
 
     public void addCash(double amount) {
-        if (amount > 0) {
-            this.cashBalance += amount;
+        if (amount > 0 && Double.isFinite(amount)) {
+            BigDecimal updated = getBalanceDecimal().add(MoneyUtil.of(amount));
+            setBalanceDecimal(updated);
         }
     }
 

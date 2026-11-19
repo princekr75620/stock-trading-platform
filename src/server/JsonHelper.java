@@ -2,9 +2,12 @@ package server;
 
 import model.*;
 
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
+import util.MoneyUtil;
 
 /**
  * Lightweight pure-Java JSON serializer and parser for REST API communication.
@@ -290,13 +293,13 @@ public class JsonHelper {
         StringBuilder sb = new StringBuilder();
         sb.append("{");
         sb.append("\"traderId\":\"").append(escape(p.getTraderId())).append("\",");
-        double cash = (trader != null) ? trader.getCashBalance() : 0.0;
-        double equity = p.getCurrentPortfolioValue(marketStocks);
-        double costBasis = p.getTotalInvestmentValue();
-        double unrealizedPL = p.getUnrealizedProfitLoss(marketStocks);
+        BigDecimal cash = (trader != null) ? MoneyUtil.round(trader.getBalanceDecimal()) : MoneyUtil.ZERO;
+        BigDecimal equity = p.getCurrentPortfolioValueDecimal(marketStocks);
+        BigDecimal costBasis = p.getTotalInvestmentValueDecimal();
+        BigDecimal unrealizedPL = p.getUnrealizedProfitLossDecimal(marketStocks);
         double unrealizedPLPct = p.getUnrealizedProfitLossPercent(marketStocks);
         double realizedPL = p.getRealizedProfitLoss();
-        double netWorth = cash + equity;
+        BigDecimal netWorth = MoneyUtil.round(cash.add(equity));
 
         sb.append("\"cashBalance\":").append(String.format(Locale.US, "%.2f", cash)).append(",");
         sb.append("\"currentPortfolioValue\":").append(String.format(Locale.US, "%.2f", equity)).append(",");
@@ -327,13 +330,15 @@ public class JsonHelper {
                     }
                 }
             }
-            double curPrice = (st != null) ? st.getCurrentPrice() : 0.0;
+            BigDecimal curPrice = (st != null) ? MoneyUtil.round(st.getPriceDecimal()) : MoneyUtil.ZERO;
             String name = (st != null) ? st.getName() : sym;
-            double avgCost = p.getAverageBuyPrice(sym);
-            double invValue = avgCost * qty;
-            double curVal = curPrice * qty;
-            double pl = curVal - invValue;
-            double plPct = (invValue > 0) ? (pl / invValue) * 100.0 : 0.0;
+            BigDecimal avgCost = p.getAverageBuyPriceDecimal(sym);
+            BigDecimal invValue = MoneyUtil.round(avgCost.multiply(BigDecimal.valueOf(qty)));
+            BigDecimal curVal = MoneyUtil.round(curPrice.multiply(BigDecimal.valueOf(qty)));
+            BigDecimal pl = MoneyUtil.round(curVal.subtract(invValue));
+            double plPct = (invValue.compareTo(BigDecimal.ZERO) > 0)
+                    ? pl.multiply(MoneyUtil.HUNDRED).divide(invValue, MoneyUtil.CURRENCY_SCALE, RoundingMode.HALF_UP).doubleValue()
+                    : 0.0;
 
             sb.append("{");
             sb.append("\"symbol\":\"").append(escape(sym)).append("\",");

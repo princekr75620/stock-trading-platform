@@ -52,9 +52,12 @@ public class AdminSettingsServlet extends BaseServlet {
                 cur.setMaintenanceMode("true".equalsIgnoreCase(p.get("maintenanceMode")));
             }
             if (p.containsKey("tradingStatus")) {
+                String rawStatus = p.get("tradingStatus");
                 try {
-                    cur.setMarketStatus(SystemSettings.MarketStatus.valueOf(p.get("tradingStatus").toUpperCase()));
-                } catch (Exception ignored) {}
+                    cur.setMarketStatus(SystemSettings.MarketStatus.valueOf(rawStatus.trim().toUpperCase(java.util.Locale.ROOT)));
+                } catch (Exception badStatus) {
+                    throw new IllegalArgumentException("Unsupported tradingStatus '" + rawStatus + "'. Allowed values: OPEN, CLOSED, PRE_MARKET, AFTER_HOURS.");
+                }
             }
 
             systemSettingsService.updateSettings(cur);

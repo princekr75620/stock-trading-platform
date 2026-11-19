@@ -121,7 +121,7 @@ public class UserDAO implements UserDAOInterface {
             ps.setString(3, user.getEmail());
             ps.setString(4, user.getPassword());
             ps.setString(5, user.getRole().name());
-            ps.setBigDecimal(6, MoneyUtil.of(user.getBalance()));
+            ps.setBigDecimal(6, MoneyUtil.round(user.getBalanceDecimal()));
             if (user instanceof Admin) {
                 ps.setString(7, ((Admin) user).getDepartment());
                 ps.setInt(8, 1);
@@ -159,7 +159,7 @@ public class UserDAO implements UserDAOInterface {
             ps.setString(2, user.getEmail());
             ps.setString(3, user.getPassword());
             ps.setString(4, user.getRole().name());
-            ps.setBigDecimal(5, MoneyUtil.of(user.getBalance()));
+            ps.setBigDecimal(5, MoneyUtil.round(user.getBalanceDecimal()));
             if (user instanceof Admin) {
                 ps.setString(6, ((Admin) user).getDepartment());
                 ps.setInt(7, 1);
@@ -291,7 +291,8 @@ public class UserDAO implements UserDAOInterface {
         String password = rs.getString("password");
         String roleStr = rs.getString("role");
         BigDecimal balDec = rs.getBigDecimal("balance");
-        double balance = balDec != null ? MoneyUtil.round(balDec).doubleValue() : 0.0;
+        BigDecimal safeBal = balDec != null ? MoneyUtil.round(balDec) : MoneyUtil.ZERO;
+        double balance = safeBal.doubleValue();
         String department = rs.getString("department");
 
         boolean emailAlerts = true;
@@ -314,12 +315,13 @@ public class UserDAO implements UserDAOInterface {
         if (role == UserRole.ADMIN) {
             Admin admin = new Admin(userId, name, email, password, department != null ? department : "System Operations", createdAt);
             admin.setId(id);
-            admin.setBalance(balance);
+            admin.setBalanceDecimal(safeBal);
             return admin;
         } else {
             Set<String> wl = loadWatchlistWithinConnection(conn, userId);
             Trader trader = new Trader(userId, name, email, password, balance, wl, threshold, emailAlerts, createdAt);
             trader.setId(id);
+            trader.setBalanceDecimal(safeBal);
             return trader;
         }
     }

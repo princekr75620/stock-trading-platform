@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import express from 'express';
 import path from 'path';
 import { createServer as createViteServer } from 'vite';
@@ -16,6 +17,54 @@ const HEALTH_TIMEOUT_MS = Number(process.env.JAVA_STARTUP_TIMEOUT_MS || 20000);
 
 let javaProcess: ChildProcess | null = null;
 let shuttingDown = false;
+
+function validateEnvironmentConfig(): void {
+  if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535) {
+    throw new Error('PORT must be a valid TCP port (1-65535).');
+  }
+  if (!Number.isInteger(JAVA_PORT) || JAVA_PORT < 1 || JAVA_PORT > 65535) {
+    throw new Error('JAVA_PORT must be a valid TCP port (1-65535).');
+  }
+
+  const appEnv = (process.env.APP_ENV || process.env.NODE_ENV || 'development').trim().toLowerCase();
+  if (appEnv !== 'production') {
+    return;
+  }
+
+  const dbType = (process.env.DB_TYPE || '').trim().toLowerCase();
+  if (dbType !== 'mysql' && dbType !== 'sqlite') {
+    throw new Error("Production startup requires DB_TYPE to be explicitly set to 'mysql' or 'sqlite'.");
+  }
+
+  if (dbType === 'mysql') {
+    const host = (process.env.MYSQL_HOST || process.env.DB_HOST || '').trim();
+    const dbName = (process.env.MYSQL_DATABASE || process.env.DB_NAME || '').trim();
+    const user = (process.env.MYSQL_USER || process.env.DB_USER || '').trim();
+    const password = process.env.MYSQL_PASSWORD || process.env.DB_PASSWORD || '';
+    const sslMode = (process.env.DB_SSL_MODE || process.env.MYSQL_SSL_MODE || 'VERIFY_IDENTITY').trim().toUpperCase();
+
+    if (!host || !dbName || !user || !password) {
+      throw new Error('Production MySQL configuration is incomplete (MYSQL_HOST, MYSQL_DATABASE, MYSQL_USER, MYSQL_PASSWORD required).');
+    }
+    if (user.toLowerCase() === 'root') {
+      throw new Error("Production MySQL startup rejected: 'root' user is forbidden; configure a dedicated least-privilege database user.");
+    }
+    const lowerPass = password.trim().toLowerCase();
+    if (
+      password.length < 8 ||
+      lowerPass === 'root' ||
+      lowerPass === 'password' ||
+      lowerPass === 'changeme' ||
+      lowerPass === 'admin123' ||
+      lowerPass === 'replace_with_strong_database_password'
+    ) {
+      throw new Error('Production MySQL password rejected: must be at least 8 characters and not a default placeholder.');
+    }
+    if (sslMode !== 'VERIFY_IDENTITY' && sslMode !== 'VERIFY_CA') {
+      throw new Error('Production MySQL startup requires certificate-verified TLS (DB_SSL_MODE=VERIFY_IDENTITY or VERIFY_CA).');
+    }
+  }
+}
 
 function resolveJavaBinary(): string {
   const candidates = [
@@ -77,6 +126,7 @@ async function startAndAwaitJavaBackend(): Promise<void> {
     console.log(`[Server Gateway] Launching authoritative Java HTTP Server on ${JAVA_HOST}:${JAVA_PORT}...`);
     const child = spawn(javaBin, ['-cp', 'lib/*:out', 'server.TradingPlatformHttpServer', String(JAVA_PORT)], {
       stdio: 'inherit',
+      env: process.env,
     });
     javaProcess = child;
 
@@ -155,6 +205,7 @@ process.on('SIGHUP', () => {
 process.on('exit', cleanup);
 
 async function startServer(): Promise<void> {
+  validateEnvironmentConfig();
   compileJavaBackend();
   await startAndAwaitJavaBackend();
 

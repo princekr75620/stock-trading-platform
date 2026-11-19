@@ -191,7 +191,7 @@ public class StockDAO implements StockDAOInterface {
         ps.setString(1, stock.getSymbol().toUpperCase().trim());
         ps.setString(2, stock.getName());
         ps.setString(3, stock.getExchange());
-        ps.setBigDecimal(4, MoneyUtil.of(stock.getCurrentPrice()));
+        ps.setBigDecimal(4, MoneyUtil.round(stock.getPriceDecimal()));
         ps.setInt(5, stock.getAvailableQuantity());
         ps.setString(6, stock.getStatus());
         double prev = stock.getPreviousPrice() > 0 ? stock.getPreviousPrice() : stock.getCurrentPrice();
@@ -210,7 +210,7 @@ public class StockDAO implements StockDAOInterface {
              PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setString(1, stock.getName());
             ps.setString(2, stock.getExchange());
-            ps.setBigDecimal(3, MoneyUtil.of(stock.getCurrentPrice()));
+            ps.setBigDecimal(3, MoneyUtil.round(stock.getPriceDecimal()));
             ps.setInt(4, stock.getAvailableQuantity());
             ps.setString(5, stock.getStatus());
             ps.setBigDecimal(6, MoneyUtil.of(stock.getPreviousPrice()));
@@ -260,7 +260,8 @@ public class StockDAO implements StockDAOInterface {
         } catch (SQLException ignored) {}
 
         BigDecimal priceDec = rs.getBigDecimal("price");
-        double price = priceDec != null ? MoneyUtil.round(priceDec).doubleValue() : 0.0;
+        BigDecimal safePrice = priceDec != null ? MoneyUtil.round(priceDec) : MoneyUtil.ZERO;
+        double price = safePrice.doubleValue();
         int availableQty = rs.getInt("available_quantity");
         String status = "ACTIVE";
         try {
@@ -277,6 +278,7 @@ public class StockDAO implements StockDAOInterface {
         long volume = rs.getLong("volume_traded");
 
         Stock stock = new Stock(id, symbol, name, exchange, price, availableQty, status);
+        stock.setPriceDecimal(safePrice);
         stock.setPreviousPrice(prevPrice);
         stock.setDayHigh(dayHigh);
         stock.setDayLow(dayLow);

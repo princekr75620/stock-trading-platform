@@ -1,6 +1,7 @@
 package dao;
 
 import model.Portfolio;
+import java.math.BigDecimal;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.util.Map;
@@ -14,6 +15,7 @@ public interface PortfolioDAOInterface {
     Map<String, Portfolio> findAll() throws SQLException;
     Map<String, Integer> getHoldings(String userId) throws SQLException;
     Map<String, Integer> getHoldings(Connection conn, String userId) throws SQLException;
+    boolean recordBuy(Connection conn, String userId, int stockId, String symbol, int quantity, BigDecimal price) throws SQLException;
     boolean recordBuy(Connection conn, String userId, int stockId, String symbol, int quantity, double price) throws SQLException;
     boolean recordSell(Connection conn, String userId, String symbol, int quantity) throws SQLException;
 }

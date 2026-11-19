@@ -1,6 +1,8 @@
 package model;
 
 import java.io.Serializable;
+import java.math.BigDecimal;
+import util.MoneyUtil;
 
 /**
  * Represents a publicly traded Indian stock on the NSE / BSE exchange.
@@ -15,6 +17,7 @@ public class Stock implements Serializable {
     private String name;
     private String exchange = "NSE"; // NSE, BSE, NIFTY 50
     private double currentPrice;
+    private BigDecimal priceDecimal;
     private int availableQuantity;
     private double previousPrice;
     private double dayHigh;
@@ -37,6 +40,7 @@ public class Stock implements Serializable {
         this.name = name;
         this.exchange = (exchange != null && !exchange.isEmpty()) ? exchange.toUpperCase().trim() : "NSE";
         this.currentPrice = currentPrice;
+        this.priceDecimal = Double.isFinite(currentPrice) ? MoneyUtil.round(BigDecimal.valueOf(currentPrice)) : MoneyUtil.ZERO;
         this.previousPrice = currentPrice;
         this.availableQuantity = availableQuantity;
         this.dayHigh = currentPrice;
@@ -71,9 +75,11 @@ public class Stock implements Serializable {
 
     // Core business operations
     public synchronized void updatePrice(double newPrice) {
-        if (newPrice <= 0) return;
+        if (newPrice <= 0 || !Double.isFinite(newPrice)) return;
         this.previousPrice = this.currentPrice;
-        this.currentPrice = Math.round(newPrice * 100.0) / 100.0;
+        BigDecimal rounded = MoneyUtil.of(newPrice);
+        this.priceDecimal = rounded;
+        this.currentPrice = rounded.doubleValue();
         if (this.currentPrice > this.dayHigh) this.dayHigh = this.currentPrice;
         if (this.currentPrice < this.dayLow) this.dayLow = this.currentPrice;
     }
@@ -148,8 +154,21 @@ public class Stock implements Serializable {
         return currentPrice;
     }
 
+    public BigDecimal getPriceDecimal() {
+        if (priceDecimal != null) {
+            return priceDecimal;
+        }
+        return Double.isFinite(currentPrice) ? MoneyUtil.ofExact(currentPrice) : MoneyUtil.ZERO;
+    }
+
     public void setCurrentPrice(double currentPrice) {
         this.currentPrice = currentPrice;
+        this.priceDecimal = Double.isFinite(currentPrice) ? MoneyUtil.of(currentPrice) : MoneyUtil.ZERO;
+    }
+
+    public void setPriceDecimal(BigDecimal priceDecimal) {
+        this.priceDecimal = priceDecimal != null ? MoneyUtil.round(priceDecimal) : MoneyUtil.ZERO;
+        this.currentPrice = this.priceDecimal.doubleValue();
     }
 
     public double getPrice() {

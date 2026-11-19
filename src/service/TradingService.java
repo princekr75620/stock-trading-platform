@@ -132,7 +132,7 @@ public class TradingService implements ITradingService, TradingServiceInterface 
             if (!"ACTIVE".equalsIgnoreCase(stock.getStatus())) {
                 throw new InvalidTransactionException("Trading is currently halted or suspended for " + sym + ".");
             }
-            if (stock.getCurrentPrice() <= 0) {
+            if (stock.getPriceDecimal().compareTo(BigDecimal.ZERO) <= 0) {
                 throw new InvalidTransactionException("Stock '" + sym + "' has an invalid quote price.");
             }
             if (stock.getAvailableQuantity() < quantity) {
@@ -145,7 +145,7 @@ public class TradingService implements ITradingService, TradingServiceInterface 
                 throw new InvalidTransactionException("Trader account not found in database: " + uid);
             }
 
-            BigDecimal currentPrice = MoneyUtil.of(stock.getCurrentPrice());
+            BigDecimal currentPrice = MoneyUtil.round(stock.getPriceDecimal());
             BigDecimal subtotal;
             BigDecimal feeAmount;
             BigDecimal totalAmount;
@@ -157,7 +157,7 @@ public class TradingService implements ITradingService, TradingServiceInterface 
                 throw new InvalidTransactionException(ex.getMessage());
             }
 
-            BigDecimal currentBalance = MoneyUtil.of(user.getBalance());
+            BigDecimal currentBalance = MoneyUtil.round(user.getBalanceDecimal());
             if (currentBalance.compareTo(totalAmount) < 0) {
                 throw new InsufficientBalanceException(totalAmount.doubleValue(), currentBalance.doubleValue());
             }
@@ -172,8 +172,8 @@ public class TradingService implements ITradingService, TradingServiceInterface 
                 throw new InsufficientStockException(sym, quantity, stock.getAvailableQuantity());
             }
 
-            // Step 5: Upsert portfolio holdings & weighted average price
-            if (!portfolioDAO.recordBuy(conn, user.getUserId(), stock.getId(), sym, quantity, currentPrice.doubleValue())) {
+            // Step 5: Upsert portfolio holdings & weighted average price using BigDecimal
+            if (!portfolioDAO.recordBuy(conn, user.getUserId(), stock.getId(), sym, quantity, currentPrice)) {
                 throw new SQLException("Failed to update portfolio holdings for " + sym);
             }
 
@@ -321,7 +321,7 @@ public class TradingService implements ITradingService, TradingServiceInterface 
             if (!"ACTIVE".equalsIgnoreCase(stock.getStatus())) {
                 throw new InvalidTransactionException("Trading is currently halted or suspended for " + sym + ".");
             }
-            if (stock.getCurrentPrice() <= 0) {
+            if (stock.getPriceDecimal().compareTo(BigDecimal.ZERO) <= 0) {
                 throw new InvalidTransactionException("Stock '" + sym + "' has an invalid quote price.");
             }
 
@@ -341,7 +341,7 @@ public class TradingService implements ITradingService, TradingServiceInterface 
                 ));
             }
 
-            BigDecimal currentPrice = MoneyUtil.of(stock.getCurrentPrice());
+            BigDecimal currentPrice = MoneyUtil.round(stock.getPriceDecimal());
             BigDecimal subtotal;
             BigDecimal feeAmount;
             BigDecimal netProceeds;
@@ -353,7 +353,7 @@ public class TradingService implements ITradingService, TradingServiceInterface 
                 throw new InvalidTransactionException(ex.getMessage());
             }
 
-            BigDecimal currentBalance = MoneyUtil.of(user.getBalance());
+            BigDecimal currentBalance = MoneyUtil.round(user.getBalanceDecimal());
             if (currentBalance.add(netProceeds).compareTo(MoneyUtil.MAX_MONETARY_AMOUNT) > 0) {
                 throw new InvalidTransactionException("Resulting balance exceeds platform safety limit.");
             }

@@ -1,7 +1,9 @@
 package model;
 
 import java.io.Serializable;
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import util.MoneyUtil;
 
 /**
  * Abstract base class representing a User in the Online Stock Trading Platform.
@@ -17,6 +19,7 @@ public abstract class User implements Serializable {
     protected String password;
     protected UserRole role;
     protected double balance;
+    protected BigDecimal balanceDecimal;
     protected LocalDateTime createdAt;
 
     public User(String userId, String name, String email, String password, UserRole role) {
@@ -26,6 +29,7 @@ public abstract class User implements Serializable {
         this.password = password;
         this.role = role;
         this.balance = 0.0;
+        this.balanceDecimal = MoneyUtil.ZERO;
         this.createdAt = LocalDateTime.now();
     }
 
@@ -36,6 +40,7 @@ public abstract class User implements Serializable {
         this.password = password;
         this.role = role;
         this.balance = 0.0;
+        this.balanceDecimal = MoneyUtil.ZERO;
         this.createdAt = createdAt;
     }
 
@@ -59,8 +64,21 @@ public abstract class User implements Serializable {
         return balance;
     }
 
+    public BigDecimal getBalanceDecimal() {
+        if (balanceDecimal != null) {
+            return balanceDecimal;
+        }
+        return MoneyUtil.of(getBalance());
+    }
+
     public void setBalance(double balance) {
         this.balance = balance;
+        this.balanceDecimal = MoneyUtil.of(balance);
+    }
+
+    public void setBalanceDecimal(BigDecimal balanceDecimal) {
+        this.balanceDecimal = balanceDecimal != null ? MoneyUtil.round(balanceDecimal) : MoneyUtil.ZERO;
+        this.balance = this.balanceDecimal.doubleValue();
     }
 
     // Getters and Setters (Encapsulation)

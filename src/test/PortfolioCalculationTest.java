@@ -30,6 +30,8 @@ public class PortfolioCalculationTest {
         testPartialSellDecrementsHolding();
         testFullSellRemovesHolding();
         testBigDecimalWeightedAverageAndUnrealizedPnL();
+        testInvalidPriceAndQuantityRejected();
+        testFractionalBigDecimalAvoidsBinaryFloatDrift();
 
         System.out.printf("PortfolioCalculationTest Results: %d/%d Passed.\n\n", testsPassed, testsRun);
         return testsPassed == testsRun;
@@ -105,5 +107,36 @@ public class PortfolioCalculationTest {
                         && Math.abs(currentVal - 2005.70) < 0.001
                         && Math.abs(unrealized - 300.02) < 0.001,
                 "testBigDecimalWeightedAverageAndUnrealizedPnL - Exact BigDecimal cost basis & P&L math");
+    }
+
+    public static void testInvalidPriceAndQuantityRejected() {
+        Portfolio p = new Portfolio("trader_guard");
+        boolean zeroBuyRejected = false;
+        boolean nanSellRejected = false;
+        try {
+            p.recordBuy("TCS", 5, 0.0);
+        } catch (IllegalArgumentException e) {
+            zeroBuyRejected = true;
+        }
+        p.recordBuy("TCS", 5, new java.math.BigDecimal("100.00"));
+        try {
+            p.recordSell("TCS", 2, Double.NaN);
+        } catch (IllegalArgumentException e) {
+            nanSellRejected = true;
+        }
+        assertTrue(zeroBuyRejected && nanSellRejected,
+                "testInvalidPriceAndQuantityRejected - Rejects zero/NaN buy and sell prices");
+    }
+
+    public static void testFractionalBigDecimalAvoidsBinaryFloatDrift() {
+        Portfolio p = new Portfolio("trader_prec");
+        p.recordBuy("HDFCBANK", 10, new java.math.BigDecimal("100.10"));
+        p.recordBuy("HDFCBANK", 20, new java.math.BigDecimal("100.20"));
+        // 1001.00 + 2004.00 = 3005.00; 3005.00 / 30 = 100.1666... -> 100.17
+        java.math.BigDecimal totalInvest = p.getTotalInvestmentValueDecimal();
+        java.math.BigDecimal avg = p.getAverageBuyPriceDecimal("HDFCBANK");
+        assertTrue(totalInvest.compareTo(new java.math.BigDecimal("3005.00")) == 0
+                        && avg.compareTo(new java.math.BigDecimal("100.17")) == 0,
+                "testFractionalBigDecimalAvoidsBinaryFloatDrift - Exact scale=2 HALF_UP portfolio decimal values");
     }
 }

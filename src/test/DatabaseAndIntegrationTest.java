@@ -5,7 +5,9 @@ import exception.*;
 import filter.AuthenticationFilter;
 import model.*;
 import service.*;
+import util.BoundedConnectionPool;
 import util.DBConnection;
+import util.EnvConfig;
 import util.PasswordHasher;
 
 import java.math.BigDecimal;
@@ -14,6 +16,7 @@ import java.sql.DatabaseMetaData;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.util.*;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Database & System Integration Test Suite.
@@ -53,6 +56,9 @@ public class DatabaseAndIntegrationTest {
 
         testDatabaseConnectionAndConfiguration();
         testConfigurationValidationAndMigrations();
+        testEnvConfigAndTlsConfiguration();
+        testBoundedConnectionPoolLifecycle();
+        testLegacyDoubleToDecimalUpgradeMigration();
         testRegistrationAndLoginValidation();
         testDatabaseCRUDOperations();
         testRelationalIntegrityAndAtomicGuards();
@@ -194,6 +200,266 @@ public class DatabaseAndIntegrationTest {
             if (tempDb != null && tempDb.exists()) {
                 tempDb.delete();
             }
+        }
+    }
+
+    public static void testEnvConfigAndTlsConfiguration() {
+        System.out.println(">>> 1c. Testing EnvConfig Precedence, MySQL TLS Enforcement & Root Rejection...");
+
+        // 1. Production mode rejects missing DB_TYPE
+        boolean missingDbTypeRejected = false;
+        try {
+            DBConnection.validateConfigurationValues(null, "db.internal", "3306", "stock_trading", "app_svc", "StrongPass#2026!", "VERIFY_IDENTITY", null, true);
+        } catch (IllegalStateException e) {
+            missingDbTypeRejected = e.getMessage().contains("DB_TYPE");
+        }
+        assertTrue(missingDbTypeRejected, "TLS-1: Production startup rejects missing DB_TYPE");
+
+        // 2. Production mode rejects 'root' MySQL user
+        boolean rootUserRejected = false;
+        try {
+            DBConnection.validateConfigurationValues("mysql", "db.internal", "3306", "stock_trading", "root", "StrongPass#2026!", "VERIFY_IDENTITY", null, true);
+        } catch (IllegalStateException e) {
+            rootUserRejected = e.getMessage().contains("root");
+        }
+        assertTrue(rootUserRejected, "TLS-2: Production startup forbids MySQL 'root' user");
+
+        // 3. Insecure TLS modes DISABLED / NONE / unverified REQUIRED in prod are rejected
+        boolean disabledSslRejected = false;
+        try {
+            DBConnection.validateConfigurationValues("mysql", "db.internal", "3306", "stock_trading", "app_svc", "StrongPass#2026!", "DISABLED", null, false);
+        } catch (IllegalStateException e) {
+            disabledSslRejected = e.getMessage().contains("Insecure MySQL TLS mode");
+        }
+        boolean unverifiedProdSslRejected = false;
+        try {
+            DBConnection.validateConfigurationValues("mysql", "db.internal", "3306", "stock_trading", "app_svc", "StrongPass#2026!", "REQUIRED", null, true);
+        } catch (IllegalStateException e) {
+            unverifiedProdSslRejected = e.getMessage().contains("VERIFY_IDENTITY");
+        }
+        assertTrue(disabledSslRejected && unverifiedProdSslRejected,
+                "TLS-3: Insecure TLS DISABLED and non-CA production REQUIRED modes rejected");
+
+        // 4. Generated MySQL JDBC URL enforces TLS verification and never emits useSSL=false or allowPublicKeyRetrieval=true
+        java.io.File tempTrust = null;
+        try {
+            tempTrust = java.io.File.createTempFile("test_trust_", ".p12");
+            String jdbcUrl = DBConnection.buildMySqlJdbcUrl(
+                    "db.prod.internal", "3306", "stock_trading",
+                    "VERIFY_IDENTITY", tempTrust.getAbsolutePath(), "PKCS12", true);
+            assertTrue(jdbcUrl.contains("sslMode=VERIFY_IDENTITY")
+                            && jdbcUrl.contains("tlsVersions=TLSv1.2,TLSv1.3")
+                            && jdbcUrl.contains("trustCertificateKeyStoreType=PKCS12")
+                            && !jdbcUrl.contains("useSSL=false")
+                            && !jdbcUrl.contains("allowPublicKeyRetrieval=true"),
+                    "TLS-4: MySQL JDBC URL enforces VERIFY_IDENTITY TLSv1.2/1.3 + truststore without useSSL=false");
+        } catch (Exception e) {
+            assertTrue(false, "TLS-4: Unexpected exception: " + e.getMessage());
+        } finally {
+            if (tempTrust != null && tempTrust.exists()) tempTrust.delete();
+        }
+
+        // 5. Missing DB_SSL_CA path rejected loudly
+        boolean missingCaRejected = false;
+        try {
+            DBConnection.validateConfigurationValues("mysql", "db.internal", "3306", "stock_trading",
+                    "app_svc", "StrongPass#2026!", "VERIFY_CA", "/nonexistent/ca/cert.pem", true);
+        } catch (IllegalStateException e) {
+            missingCaRejected = e.getMessage().contains("DB_SSL_CA");
+        }
+        assertTrue(missingCaRejected, "TLS-5: Missing DB_SSL_CA certificate file rejected cleanly");
+
+        // 6. EnvConfig parses quoted/unquoted .env entries and prioritizes JVM System Properties over .env
+        java.io.File tempEnv = null;
+        try {
+            tempEnv = java.io.File.createTempFile("env_parse_", ".env");
+            try (java.io.FileWriter fw = new java.io.FileWriter(tempEnv)) {
+                fw.write("# comment line\nDB_POOL_MAX=16\nAPP_URL=\"https://trade.example.com\"\n");
+            }
+            Map<String, String> parsed = EnvConfig.parseDotEnvFile(tempEnv);
+            System.setProperty("TEST_ENV_PRECEDENCE_KEY", "from-sysprop");
+            String resolved = EnvConfig.get("TEST_ENV_PRECEDENCE_KEY", "fallback");
+            assertTrue("16".equals(parsed.get("DB_POOL_MAX"))
+                            && "https://trade.example.com".equals(parsed.get("APP_URL"))
+                            && "from-sysprop".equals(resolved),
+                    "ENV-1: EnvConfig parses .env files cleanly and honors property precedence");
+        } catch (Exception e) {
+            assertTrue(false, "ENV-1: Exception testing EnvConfig: " + e.getMessage());
+        } finally {
+            System.clearProperty("TEST_ENV_PRECEDENCE_KEY");
+            if (tempEnv != null && tempEnv.exists()) tempEnv.delete();
+        }
+    }
+
+    public static void testBoundedConnectionPoolLifecycle() {
+        System.out.println(">>> 1d. Testing BoundedConnectionPool Limit, Timeout, Validation & Cleanup...");
+        java.io.File tempDb = null;
+        BoundedConnectionPool pool = null;
+        try {
+            tempDb = java.io.File.createTempFile("pool_test_", ".db");
+            final String url = "jdbc:sqlite:" + tempDb.getAbsolutePath() + "?busy_timeout=5000&transaction_mode=IMMEDIATE";
+            AtomicInteger physicalCreations = new AtomicInteger(0);
+
+            pool = new BoundedConnectionPool(() -> {
+                physicalCreations.incrementAndGet();
+                return java.sql.DriverManager.getConnection(url);
+            }, 2, 1, 150, 60_000);
+
+            pool.ensureMinIdle();
+            BoundedConnectionPool.PoolStats initialStats = pool.getStats();
+            assertTrue(initialStats.idleConnections == 1 && initialStats.totalConnections == 1,
+                    "POOL-1: ensureMinIdle pre-warms configured minIdle=1 connection");
+
+            // Borrow maxPoolSize=2 active connections simultaneously
+            Connection c1 = pool.getConnection();
+            Connection c2 = pool.getConnection();
+            BoundedConnectionPool.PoolStats busyStats = pool.getStats();
+            assertTrue(busyStats.activeConnections == 2 && busyStats.totalConnections == 2,
+                    "POOL-2: Pool enforces maxPoolSize=2 active ceiling");
+
+            // 3rd concurrent borrow must time out rather than exceeding maxPoolSize
+            boolean timedOut = false;
+            try {
+                pool.getConnection();
+            } catch (SQLException expected) {
+                timedOut = expected.getMessage().contains("timed out");
+            }
+            assertTrue(timedOut && physicalCreations.get() == 2,
+                    "POOL-3: 3rd borrow fails cleanly on timeout without creating > maxPoolSize connections");
+
+            // Uncommitted transaction in autoCommit=false must roll back and reset autoCommit=true upon close()
+            try (java.sql.Statement st = c1.createStatement()) {
+                st.execute("CREATE TABLE pool_tx_check (val INTEGER)");
+            }
+            c1.setAutoCommit(false);
+            try (java.sql.Statement st = c1.createStatement()) {
+                st.execute("INSERT INTO pool_tx_check (val) VALUES (42)");
+            }
+            c1.close(); // returns to pool -> must rollback uncommitted 42 and reset autoCommit=true
+            c2.close();
+
+            Connection reused = pool.getConnection();
+            int uncommittedRows = 0;
+            try (java.sql.Statement st = reused.createStatement();
+                 java.sql.ResultSet rs = st.executeQuery("SELECT COUNT(*) FROM pool_tx_check")) {
+                if (rs.next()) uncommittedRows = rs.getInt(1);
+            }
+            assertTrue(reused.getAutoCommit() && uncommittedRows == 0 && physicalCreations.get() == 2,
+                    "POOL-4: Returning connection rolls back uncommitted work, resets autoCommit, and reuses connection");
+            reused.close();
+
+            // Force physical connection retirement by shutting down and creating a tiny maxLifetime pool
+            pool.shutdown();
+            BoundedConnectionPool.PoolStats closedStats = pool.getStats();
+            boolean borrowAfterShutdownRejected = false;
+            try {
+                pool.getConnection();
+            } catch (SQLException expected) {
+                borrowAfterShutdownRejected = expected.getMessage().contains("shut down");
+            }
+            assertTrue(closedStats.closed && closedStats.idleConnections == 0 && borrowAfterShutdownRejected,
+                    "POOL-5: Pool shutdown closes idle connections and rejects further borrows");
+
+            // Verify maxLifetimeMs evicts expired idle connections & replaces them cleanly
+            AtomicInteger agedCreations = new AtomicInteger(0);
+            BoundedConnectionPool agedPool = new BoundedConnectionPool(() -> {
+                agedCreations.incrementAndGet();
+                return java.sql.DriverManager.getConnection(url);
+            }, 2, 0, 200, 100);
+            Connection shortLived = agedPool.getConnection();
+            shortLived.close();
+            Thread.sleep(130);
+            Connection refreshed = agedPool.getConnection();
+            assertTrue(agedCreations.get() == 2,
+                    "POOL-6: Expired physical connection beyond maxLifetimeMs retired and replaced cleanly");
+            refreshed.close();
+            agedPool.shutdown();
+        } catch (Exception e) {
+            e.printStackTrace();
+            assertTrue(false, "POOL: Unexpected error in pool test: " + e.getMessage());
+        } finally {
+            if (pool != null) pool.shutdown();
+            if (tempDb != null && tempDb.exists()) tempDb.delete();
+        }
+    }
+
+    public static void testLegacyDoubleToDecimalUpgradeMigration() {
+        System.out.println(">>> 1e. Testing Legacy DOUBLE -> DECIMAL(15, 2) Data-Preserving Migration...");
+        java.io.File tempDb = null;
+        try {
+            tempDb = java.io.File.createTempFile("decimal_mig_test_", ".db");
+            String tempUrl = "jdbc:sqlite:" + tempDb.getAbsolutePath() + "?busy_timeout=5000&transaction_mode=IMMEDIATE";
+            try (Connection conn = java.sql.DriverManager.getConnection(tempUrl);
+                 java.sql.Statement st = conn.createStatement()) {
+
+                st.execute("CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id VARCHAR(50) UNIQUE NOT NULL, name VARCHAR(100) NOT NULL, email VARCHAR(150) UNIQUE NOT NULL, password VARCHAR(255) NOT NULL, role VARCHAR(20) NOT NULL, balance DOUBLE NOT NULL DEFAULT 50000.00, department VARCHAR(100), created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);");
+                st.execute("CREATE TABLE stocks (id INTEGER PRIMARY KEY AUTOINCREMENT, symbol VARCHAR(20) UNIQUE NOT NULL, company_name VARCHAR(150) NOT NULL, exchange VARCHAR(10) NOT NULL DEFAULT 'NSE', price DOUBLE NOT NULL, available_quantity INTEGER NOT NULL, status VARCHAR(20) NOT NULL DEFAULT 'ACTIVE', previous_price DOUBLE DEFAULT 0.00, day_high DOUBLE DEFAULT 0.00, day_low DOUBLE DEFAULT 0.00, volume_traded BIGINT DEFAULT 0);");
+                st.execute("CREATE TABLE portfolio (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id VARCHAR(50) NOT NULL, stock_id INTEGER NOT NULL DEFAULT 0, symbol VARCHAR(20) NOT NULL, quantity INTEGER NOT NULL, average_price DOUBLE NOT NULL);");
+                st.execute("CREATE TABLE transactions (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id VARCHAR(50) NOT NULL, stock_id INTEGER NOT NULL DEFAULT 0, symbol VARCHAR(20) NOT NULL, transaction_type VARCHAR(10) NOT NULL, quantity INTEGER NOT NULL, price DOUBLE NOT NULL, total_amount DOUBLE NOT NULL, transaction_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP);");
+                st.execute("CREATE TABLE watchlist (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id VARCHAR(50) NOT NULL, symbol VARCHAR(20) NOT NULL, added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, UNIQUE(user_id, symbol));");
+
+                st.execute("INSERT INTO users (user_id, name, email, password, role, balance) VALUES ('dbl_u1', 'Double User', 'dbl@test.in', '$2a$12$dummyhash', 'TRADER', 98765.43);");
+                st.execute("INSERT INTO stocks (symbol, company_name, price, available_quantity) VALUES ('INFY', 'Infosys Ltd', 1425.75, 1000);");
+                st.execute("INSERT INTO portfolio (user_id, stock_id, symbol, quantity, average_price) VALUES ('dbl_u1', 1, 'INFY', 12, 1400.50);");
+                st.execute("INSERT INTO transactions (user_id, stock_id, symbol, transaction_type, quantity, price, total_amount) VALUES ('dbl_u1', 1, 'INFY', 'BUY', 12, 1400.50, 16831.21);");
+
+                // Execute migrations twice to verify idempotency and DOUBLE -> DECIMAL conversion
+                DBConnection.initializeSchemaAndMigrate(conn, false);
+                DBConnection.initializeSchemaAndMigrate(conn, false);
+
+                boolean usersConverted = false;
+                boolean txConverted = false;
+                try (java.sql.ResultSet rs = st.executeQuery("PRAGMA table_info(users)")) {
+                    while (rs.next()) {
+                        if ("balance".equalsIgnoreCase(rs.getString("name"))
+                                && rs.getString("type").toUpperCase(Locale.ROOT).contains("DECIMAL(15, 2)")) {
+                            usersConverted = true;
+                        }
+                    }
+                }
+                try (java.sql.ResultSet rs = st.executeQuery("PRAGMA table_info(transactions)")) {
+                    while (rs.next()) {
+                        if ("total_amount".equalsIgnoreCase(rs.getString("name"))
+                                && rs.getString("type").toUpperCase(Locale.ROOT).contains("DECIMAL(15, 2)")) {
+                            txConverted = true;
+                        }
+                    }
+                }
+
+                BigDecimal balAfter = null;
+                BigDecimal avgAfter = null;
+                BigDecimal totalAfter = null;
+                try (java.sql.ResultSet rs = st.executeQuery("SELECT balance FROM users WHERE user_id = 'dbl_u1'")) {
+                    if (rs.next()) balAfter = rs.getBigDecimal(1);
+                }
+                try (java.sql.ResultSet rs = st.executeQuery("SELECT average_price FROM portfolio WHERE user_id = 'dbl_u1'")) {
+                    if (rs.next()) avgAfter = rs.getBigDecimal(1);
+                }
+                try (java.sql.ResultSet rs = st.executeQuery("SELECT total_amount FROM transactions WHERE user_id = 'dbl_u1'")) {
+                    if (rs.next()) totalAfter = rs.getBigDecimal(1);
+                }
+
+                boolean hasMig004 = false;
+                try (java.sql.ResultSet rs = st.executeQuery("SELECT 1 FROM schema_migrations WHERE version = '004_monetary_decimal_precision'")) {
+                    hasMig004 = rs.next();
+                }
+
+                assertTrue(usersConverted && txConverted && hasMig004,
+                        "MIG-3: SQLite legacy DOUBLE columns converted to DECIMAL(15, 2) and tracked in schema_migrations");
+                assertTrue(balAfter != null && balAfter.compareTo(new BigDecimal("98765.43")) == 0
+                                && avgAfter != null && avgAfter.compareTo(new BigDecimal("1400.50")) == 0
+                                && totalAfter != null && totalAfter.compareTo(new BigDecimal("16831.21")) == 0,
+                        "MIG-4: DOUBLE -> DECIMAL migration preserved exact user balance, holding cost & transaction total");
+
+                String mysqlAlter = DBConnection.generateMySqlMonetaryAlterSql("transactions", "total_amount", true, "");
+                assertTrue("ALTER TABLE transactions MODIFY COLUMN total_amount DECIMAL(15, 2) NOT NULL".equals(mysqlAlter),
+                        "MIG-5: MySQL ALTER TABLE MODIFY COLUMN DECIMAL(15, 2) DDL verified");
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+            assertTrue(false, "MIG-DECIMAL: Unexpected error: " + e.getMessage());
+        } finally {
+            if (tempDb != null && tempDb.exists()) tempDb.delete();
         }
     }
 

@@ -28,8 +28,10 @@ public class PortfolioDAO implements PortfolioDAOInterface {
                     String symbol = rs.getString("symbol");
                     int qty = rs.getInt("quantity");
                     BigDecimal avgDec = rs.getBigDecimal("average_price");
-                    double avgPrice = avgDec != null ? MoneyUtil.round(avgDec).doubleValue() : 0.0;
-                    portfolio.recordBuy(symbol, qty, avgPrice);
+                    BigDecimal safeAvg = (avgDec != null && avgDec.compareTo(BigDecimal.ZERO) > 0)
+                            ? MoneyUtil.round(avgDec)
+                            : new BigDecimal("0.01");
+                    portfolio.recordBuy(symbol, qty, safeAvg);
                 }
             }
         }
@@ -48,9 +50,11 @@ public class PortfolioDAO implements PortfolioDAOInterface {
                 String symbol = rs.getString("symbol");
                 int qty = rs.getInt("quantity");
                 BigDecimal avgDec = rs.getBigDecimal("average_price");
-                double avgPrice = avgDec != null ? MoneyUtil.round(avgDec).doubleValue() : 0.0;
+                BigDecimal safeAvg = (avgDec != null && avgDec.compareTo(BigDecimal.ZERO) > 0)
+                        ? MoneyUtil.round(avgDec)
+                        : new BigDecimal("0.01");
                 Portfolio p = result.computeIfAbsent(userId, Portfolio::new);
-                p.recordBuy(symbol, qty, avgPrice);
+                p.recordBuy(symbol, qty, safeAvg);
             }
         }
         return result;
@@ -81,7 +85,16 @@ public class PortfolioDAO implements PortfolioDAOInterface {
 
     @Override
     public boolean recordBuy(Connection conn, String userId, int stockId, String symbol, int quantity, double price) throws SQLException {
-        if (userId == null || userId.trim().isEmpty() || symbol == null || symbol.trim().isEmpty() || quantity <= 0 || price <= 0) {
+        if (!Double.isFinite(price) || price <= 0.0) {
+            return false;
+        }
+        return recordBuy(conn, userId, stockId, symbol, quantity, MoneyUtil.ofExact(price));
+    }
+
+    @Override
+    public boolean recordBuy(Connection conn, String userId, int stockId, String symbol, int quantity, BigDecimal price) throws SQLException {
+        if (userId == null || userId.trim().isEmpty() || symbol == null || symbol.trim().isEmpty()
+                || quantity <= 0 || price == null || price.compareTo(BigDecimal.ZERO) <= 0) {
             return false;
         }
         symbol = symbol.toUpperCase().trim();
@@ -104,7 +117,7 @@ public class PortfolioDAO implements PortfolioDAOInterface {
             }
         }
 
-        BigDecimal buyPrice = MoneyUtil.of(price);
+        BigDecimal buyPrice = MoneyUtil.round(price);
         if (exists) {
             int newTotalQty = existingQty + quantity;
             BigDecimal newAvgPrice = MoneyUtil.calculateWeightedAveragePrice(existingQty, existingAvgPrice, quantity, buyPrice);
@@ -132,6 +145,9 @@ public class PortfolioDAO implements PortfolioDAOInterface {
 
     @Override
     public boolean recordSell(Connection conn, String userId, String symbol, int quantity) throws SQLException {
+        if (userId == null || userId.trim().isEmpty() || symbol == null || symbol.trim().isEmpty() || quantity <= 0) {
+            return false;
+        }
         symbol = symbol.toUpperCase().trim();
         String checkSql = "SELECT quantity FROM portfolio WHERE user_id = ? AND symbol = ?"
                 + (DBConnection.isMySQL() ? " FOR UPDATE" : "");

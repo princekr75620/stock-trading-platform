@@ -47,6 +47,16 @@ public class TransactionDAO implements TransactionDAOInterface {
 
     @Override
     public boolean insert(Connection conn, Transaction transaction) throws SQLException {
+        if (transaction == null
+                || transaction.getUserId() == null || transaction.getUserId().trim().isEmpty()
+                || transaction.getSymbol() == null || transaction.getSymbol().trim().isEmpty()
+                || transaction.getQuantity() <= 0
+                || transaction.getPriceDecimal().compareTo(BigDecimal.ZERO) <= 0
+                || transaction.getFeeAmountDecimal().compareTo(BigDecimal.ZERO) < 0
+                || transaction.getTotalAmountDecimal().compareTo(BigDecimal.ZERO) < 0) {
+            throw new SQLException("Invalid transaction ledger record: positive quantity/price and non-negative fee/total required.");
+        }
+
         String sql = "INSERT INTO transactions (user_id, stock_id, symbol, transaction_type, quantity, price, fee_amount, total_amount, idempotency_key, transaction_date) " +
                      "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
 

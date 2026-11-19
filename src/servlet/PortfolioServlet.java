@@ -51,7 +51,9 @@ public class PortfolioServlet extends BaseServlet {
         User u = null;
         try {
             u = userService.getUserById(targetTraderId);
-        } catch (Exception ignored) {}
+        } catch (Exception ex) {
+            System.err.println("[PortfolioServlet] Failed to load trader '" + targetTraderId + "': " + ex.getMessage());
+        }
         Trader trader = (u instanceof Trader) ? (Trader) u : null;
         String json = JsonHelper.portfolioToJson(portfolio, trader, marketUpdateService.getStockMap());
         sendJsonResponse(response, HttpServletResponse.SC_OK, json);

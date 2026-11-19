@@ -44,21 +44,41 @@ public class Portfolio implements Serializable {
     }
 
     public synchronized void recordBuy(String symbol, int quantity, double price) {
-        if (symbol == null || quantity <= 0) {
+        if (!Double.isFinite(price) || price <= 0.0) {
+            throw new IllegalArgumentException("Buy price must be a positive finite amount.");
+        }
+        recordBuy(symbol, quantity, MoneyUtil.ofExact(price));
+    }
+
+    public synchronized void recordBuy(String symbol, int quantity, BigDecimal price) {
+        if (symbol == null || symbol.trim().isEmpty() || quantity <= 0) {
             throw new IllegalArgumentException("Symbol and positive quantity are required.");
+        }
+        if (price == null || price.compareTo(BigDecimal.ZERO) <= 0) {
+            throw new IllegalArgumentException("Buy price must be positive.");
         }
         String sym = symbol.toUpperCase().trim();
         int currentQty = holdings.getOrDefault(sym, 0);
         BigDecimal currentCost = costBasis.getOrDefault(sym, BigDecimal.ZERO);
 
-        BigDecimal addedCost = MoneyUtil.ofExact(price).multiply(BigDecimal.valueOf(quantity));
+        BigDecimal addedCost = price.multiply(BigDecimal.valueOf(quantity));
         holdings.put(sym, currentQty + quantity);
         costBasis.put(sym, currentCost.add(addedCost));
     }
 
     public synchronized double recordSell(String symbol, int quantity, double sellPrice) {
-        if (symbol == null || quantity <= 0) {
+        if (!Double.isFinite(sellPrice) || sellPrice <= 0.0) {
+            throw new IllegalArgumentException("Sell price must be a positive finite amount.");
+        }
+        return recordSell(symbol, quantity, MoneyUtil.ofExact(sellPrice));
+    }
+
+    public synchronized double recordSell(String symbol, int quantity, BigDecimal sellPrice) {
+        if (symbol == null || symbol.trim().isEmpty() || quantity <= 0) {
             throw new IllegalArgumentException("Symbol and positive quantity are required.");
+        }
+        if (sellPrice == null || sellPrice.compareTo(BigDecimal.ZERO) <= 0) {
+            throw new IllegalArgumentException("Sell price must be positive.");
         }
         String sym = symbol.toUpperCase().trim();
         int currentQty = holdings.getOrDefault(sym, 0);
@@ -71,7 +91,7 @@ public class Portfolio implements Serializable {
                 ? currentCost.divide(BigDecimal.valueOf(currentQty), 6, RoundingMode.HALF_UP)
                 : BigDecimal.ZERO;
         BigDecimal costOfSoldShares = avgCostPerShare.multiply(BigDecimal.valueOf(quantity));
-        BigDecimal saleRevenue = MoneyUtil.ofExact(sellPrice).multiply(BigDecimal.valueOf(quantity));
+        BigDecimal saleRevenue = sellPrice.multiply(BigDecimal.valueOf(quantity));
         BigDecimal saleProfit = saleRevenue.subtract(costOfSoldShares);
 
         this.realizedProfitLoss = this.realizedProfitLoss.add(saleProfit);
@@ -90,7 +110,11 @@ public class Portfolio implements Serializable {
     }
 
     public synchronized double recordSell(String symbol, int quantity) {
-        return recordSell(symbol, quantity, getAverageBuyPrice(symbol));
+        BigDecimal avg = getAverageBuyPriceDecimal(symbol);
+        if (avg.compareTo(BigDecimal.ZERO) <= 0) {
+            avg = BigDecimal.ONE;
+        }
+        return recordSell(symbol, quantity, avg);
     }
 
     public int getQuantity(String symbol) {
@@ -98,55 +122,75 @@ public class Portfolio implements Serializable {
         return holdings.getOrDefault(symbol.toUpperCase().trim(), 0);
     }
 
+    public BigDecimal getCostBasisDecimal(String symbol) {
+        if (symbol == null) return MoneyUtil.ZERO;
+        return MoneyUtil.round(costBasis.getOrDefault(symbol.toUpperCase().trim(), BigDecimal.ZERO));
+    }
+
     public double getCostBasis(String symbol) {
-        if (symbol == null) return 0.0;
-        return MoneyUtil.round(costBasis.getOrDefault(symbol.toUpperCase().trim(), BigDecimal.ZERO)).doubleValue();
+        return getCostBasisDecimal(symbol).doubleValue();
+    }
+
+    public BigDecimal getAverageBuyPriceDecimal(String symbol) {
+        if (symbol == null) return MoneyUtil.ZERO;
+        String sym = symbol.toUpperCase().trim();
+        int qty = holdings.getOrDefault(sym, 0);
+        if (qty <= 0) return MoneyUtil.ZERO;
+        BigDecimal cost = costBasis.getOrDefault(sym, BigDecimal.ZERO);
+        return cost.divide(BigDecimal.valueOf(qty), MoneyUtil.CURRENCY_SCALE, MoneyUtil.ROUNDING);
     }
 
     public double getAverageBuyPrice(String symbol) {
-        if (symbol == null) return 0.0;
-        String sym = symbol.toUpperCase().trim();
-        int qty = holdings.getOrDefault(sym, 0);
-        if (qty <= 0) return 0.0;
-        BigDecimal cost = costBasis.getOrDefault(sym, BigDecimal.ZERO);
-        return cost.divide(BigDecimal.valueOf(qty), MoneyUtil.CURRENCY_SCALE, MoneyUtil.ROUNDING).doubleValue();
+        return getAverageBuyPriceDecimal(symbol).doubleValue();
     }
 
-    public double getTotalInvestmentValue() {
+    public BigDecimal getTotalInvestmentValueDecimal() {
         BigDecimal total = BigDecimal.ZERO;
         for (BigDecimal cost : costBasis.values()) {
             if (cost != null) {
                 total = total.add(cost);
             }
         }
-        return MoneyUtil.round(total).doubleValue();
+        return MoneyUtil.round(total);
     }
 
-    public double getCurrentPortfolioValue(Map<String, Stock> marketStocks) {
+    public double getTotalInvestmentValue() {
+        return getTotalInvestmentValueDecimal().doubleValue();
+    }
+
+    public BigDecimal getCurrentPortfolioValueDecimal(Map<String, Stock> marketStocks) {
         BigDecimal total = BigDecimal.ZERO;
-        if (marketStocks == null) return 0.0;
+        if (marketStocks == null) return MoneyUtil.ZERO;
         for (Map.Entry<String, Integer> entry : holdings.entrySet()) {
             String sym = entry.getKey();
             int qty = entry.getValue();
             Stock stock = marketStocks.get(sym);
-            BigDecimal price = (stock != null && stock.getCurrentPrice() > 0)
-                    ? MoneyUtil.ofExact(stock.getCurrentPrice())
+            BigDecimal price = (stock != null && stock.getPriceDecimal().compareTo(BigDecimal.ZERO) > 0)
+                    ? stock.getPriceDecimal()
                     : BigDecimal.ZERO;
             total = total.add(price.multiply(BigDecimal.valueOf(qty)));
         }
-        return MoneyUtil.round(total).doubleValue();
+        return MoneyUtil.round(total);
+    }
+
+    public double getCurrentPortfolioValue(Map<String, Stock> marketStocks) {
+        return getCurrentPortfolioValueDecimal(marketStocks).doubleValue();
+    }
+
+    public BigDecimal getUnrealizedProfitLossDecimal(Map<String, Stock> marketStocks) {
+        BigDecimal curVal = getCurrentPortfolioValueDecimal(marketStocks);
+        BigDecimal investVal = getTotalInvestmentValueDecimal();
+        return MoneyUtil.round(curVal.subtract(investVal));
     }
 
     public double getUnrealizedProfitLoss(Map<String, Stock> marketStocks) {
-        BigDecimal curVal = MoneyUtil.of(getCurrentPortfolioValue(marketStocks));
-        BigDecimal investVal = MoneyUtil.of(getTotalInvestmentValue());
-        return MoneyUtil.round(curVal.subtract(investVal)).doubleValue();
+        return getUnrealizedProfitLossDecimal(marketStocks).doubleValue();
     }
 
     public double getUnrealizedProfitLossPercent(Map<String, Stock> marketStocks) {
-        BigDecimal investVal = MoneyUtil.of(getTotalInvestmentValue());
+        BigDecimal investVal = getTotalInvestmentValueDecimal();
         if (investVal.compareTo(BigDecimal.ZERO) <= 0) return 0.0;
-        BigDecimal pnl = MoneyUtil.of(getUnrealizedProfitLoss(marketStocks));
+        BigDecimal pnl = getUnrealizedProfitLossDecimal(marketStocks);
         return pnl.multiply(MoneyUtil.HUNDRED)
                 .divide(investVal, MoneyUtil.CURRENCY_SCALE, MoneyUtil.ROUNDING)
                 .doubleValue();

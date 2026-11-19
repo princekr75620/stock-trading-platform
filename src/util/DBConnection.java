@@ -1,72 +1,74 @@
 package util;
 
 import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.lang.reflect.Proxy;
+import java.security.KeyStore;
+import java.security.SecureRandom;
+import java.security.cert.Certificate;
+import java.security.cert.CertificateFactory;
 import java.sql.*;
 import java.util.*;
-import java.util.concurrent.ConcurrentLinkedDeque;
 
 /**
- * Authoritative JDBC Connection Manager & Lightweight Bounded Connection Pool.
- * - Validates mandatory configuration at startup without logging secrets.
- * - Uses SQLite transaction_mode=IMMEDIATE + busy_timeout=5000 for concurrent write safety.
- * - Separates initial schema creation, idempotent data-preserving migrations, and dev seeding.
- * - Supports SQLite (default) and MySQL (explicit DB_TYPE=mysql) with DECIMAL monetary schemas.
+ * Authoritative JDBC Connection Manager & Strictly Bounded Connection Pool.
+ * - Loads configuration deterministically via EnvConfig without printing secrets.
+ * - Enforces TLS certificate verification (sslMode=VERIFY_IDENTITY/VERIFY_CA) on MySQL
+ *   and forbids root/default credentials or useSSL=false in production.
+ * - Uses BoundedConnectionPool for genuine maxPoolSize, minIdle, timeout, maxLifetime, and shutdown control.
+ * - Uses SQLite transaction_mode=IMMEDIATE + busy_timeout=5000 + foreign_keys=ON for dev/embedded ACID safety.
+ * - Separates initial schema creation, idempotent data-preserving migrations (including DOUBLE -> DECIMAL), and seeding.
  */
 public class DBConnection {
     private static final String DATA_DIR = "data";
-    private static final String SQLITE_DB_PATH = System.getenv("SQLITE_DB_PATH") != null
-            ? System.getenv("SQLITE_DB_PATH")
-            : DATA_DIR + File.separator + "stock_trading.db";
+    private static final String SQLITE_DB_PATH = EnvConfig.get("SQLITE_DB_PATH", DATA_DIR + File.separator + "stock_trading.db");
 
-    private static final String DB_HOST = firstEnv("MYSQL_HOST", "DB_HOST", "127.0.0.1");
-    private static final String DB_PORT = firstEnv("MYSQL_PORT", "DB_PORT", "3306");
-    private static final String DB_NAME = firstEnv("MYSQL_DATABASE", "DB_NAME", "stock_trading");
-    private static final String DB_USER = firstEnv("MYSQL_USER", "DB_USER", "");
-    private static final String DB_PASSWORD = firstEnv("MYSQL_PASSWORD", "DB_PASSWORD", "");
+    private static final String DB_HOST = EnvConfig.first("MYSQL_HOST", "DB_HOST", "127.0.0.1");
+    private static final String DB_PORT = EnvConfig.first("MYSQL_PORT", "DB_PORT", "3306");
+    private static final String DB_NAME = EnvConfig.first("MYSQL_DATABASE", "DB_NAME", "stock_trading");
+    private static final String DB_USER = EnvConfig.first("MYSQL_USER", "DB_USER", "");
+    private static final String DB_PASSWORD = EnvConfig.first("MYSQL_PASSWORD", "DB_PASSWORD", "");
+    private static final String DB_SSL_MODE = EnvConfig.first("DB_SSL_MODE", "MYSQL_SSL_MODE", "");
+    private static final String DB_SSL_CA = EnvConfig.first("DB_SSL_CA", "MYSQL_SSL_CA", "");
+    private static final String DB_SSL_TRUSTSTORE_TYPE = EnvConfig.first("DB_SSL_TRUSTSTORE_TYPE", "MYSQL_SSL_TRUSTSTORE_TYPE", "");
+    private static final String DB_SSL_TRUSTSTORE_PASSWORD = EnvConfig.first("DB_SSL_TRUSTSTORE_PASSWORD", "MYSQL_SSL_TRUSTSTORE_PASSWORD", "");
 
     private static final int LOGIN_TIMEOUT_SECONDS = 5;
-    private static final int MAX_POOL_SIZE = parsePositiveInt(System.getenv("DB_POOL_SIZE"), 10);
-    private static final ConcurrentLinkedDeque<Connection> mysqlPool = new ConcurrentLinkedDeque<>();
+    private static final int MAX_POOL_SIZE = EnvConfig.getPositiveInt("DB_POOL_MAX", "DB_POOL_SIZE", 10);
+    private static final int DEFAULT_MIN_IDLE = Math.min(MAX_POOL_SIZE, EnvConfig.getPositiveInt("DB_POOL_MIN_IDLE", "MYSQL_POOL_MIN_IDLE", 2));
+    private static final long POOL_TIMEOUT_MS = EnvConfig.getPositiveLong("DB_POOL_TIMEOUT_MS", "DB_CONNECTION_TIMEOUT_MS", 5000L);
+    private static final long POOL_MAX_LIFETIME_MS = EnvConfig.getPositiveLong("DB_POOL_MAX_LIFETIME_MS", "MYSQL_POOL_MAX_LIFETIME_MS", 1_800_000L);
 
     private static final boolean useMySQL;
+    private static volatile BoundedConnectionPool activePool = null;
     private static volatile boolean initialized = false;
+    private static volatile String cachedPemTruststorePath = null;
+    private static volatile String cachedPemTruststorePassword = null;
 
     static {
         DriverManager.setLoginTimeout(LOGIN_TIMEOUT_SECONDS);
         try {
             Class.forName("org.sqlite.JDBC");
-        } catch (ClassNotFoundException ignored) {}
+        } catch (ClassNotFoundException ignored) {
+            // Optional driver check
+        }
 
         try {
             Class.forName("com.mysql.cj.jdbc.Driver");
-        } catch (ClassNotFoundException ignored) {}
+        } catch (ClassNotFoundException ignored) {
+            // Optional driver check
+        }
 
-        String requestedDb = System.getenv("DB_TYPE");
+        String requestedDb = EnvConfig.get("DB_TYPE");
         useMySQL = "mysql".equalsIgnoreCase(requestedDb != null ? requestedDb.trim() : "");
         try {
             validateConfiguration();
         } catch (IllegalStateException ex) {
             System.err.println("[JDBC] CONFIGURATION ERROR: " + ex.getMessage());
         }
-    }
 
-    private static String firstEnv(String primary, String secondary, String fallback) {
-        String v1 = System.getenv(primary);
-        if (v1 != null && !v1.trim().isEmpty()) return v1.trim();
-        String v2 = System.getenv(secondary);
-        if (v2 != null && !v2.trim().isEmpty()) return v2.trim();
-        return fallback;
-    }
-
-    private static int parsePositiveInt(String val, int def) {
-        if (val == null || val.trim().isEmpty()) return def;
-        try {
-            int parsed = Integer.parseInt(val.trim());
-            return parsed > 0 ? parsed : def;
-        } catch (NumberFormatException e) {
-            return def;
-        }
+        Runtime.getRuntime().addShutdownHook(new Thread(DBConnection::shutdownPool, "db-pool-shutdown"));
     }
 
     public static boolean isMySQL() {
@@ -74,8 +76,7 @@ public class DBConnection {
     }
 
     public static boolean isProductionMode() {
-        String env = firstEnv("APP_ENV", "NODE_ENV", "development");
-        return "production".equalsIgnoreCase(env);
+        return EnvConfig.isProductionMode();
     }
 
     /**
@@ -83,19 +84,20 @@ public class DBConnection {
      */
     public static void validateConfiguration() {
         validateConfigurationValues(
-                System.getenv("DB_TYPE"),
+                EnvConfig.get("DB_TYPE"),
                 DB_HOST,
                 DB_PORT,
                 DB_NAME,
                 DB_USER,
                 DB_PASSWORD,
+                DB_SSL_MODE,
+                DB_SSL_CA,
                 isProductionMode()
         );
     }
 
     /**
-     * Pure validation helper ensuring invalid engines, ports, or weak/missing MySQL credentials
-     * fail fast with clear error messages that never disclose password values.
+     * Backward-compatible overload for validation tests.
      */
     public static void validateConfigurationValues(
             String dbType,
@@ -105,7 +107,29 @@ public class DBConnection {
             String user,
             String password,
             boolean productionMode) {
-        String normalizedType = (dbType == null || dbType.trim().isEmpty()) ? "sqlite" : dbType.trim().toLowerCase();
+        String defaultSslMode = productionMode ? "VERIFY_IDENTITY" : "REQUIRED";
+        validateConfigurationValues(dbType, host, portStr, dbName, user, password, defaultSslMode, null, productionMode);
+    }
+
+    /**
+     * Validates database engine, host/port, credentials, least-privilege user, and TLS mode.
+     * Never exposes secret credential values in thrown exception messages or logs.
+     */
+    public static void validateConfigurationValues(
+            String dbType,
+            String host,
+            String portStr,
+            String dbName,
+            String user,
+            String password,
+            String sslMode,
+            String sslCaPath,
+            boolean productionMode) {
+        String rawType = (dbType == null || dbType.trim().isEmpty()) ? null : dbType.trim().toLowerCase(Locale.ROOT);
+        if (productionMode && rawType == null) {
+            throw new IllegalStateException("Production startup requires DB_TYPE to be explicitly configured ('mysql' or 'sqlite').");
+        }
+        String normalizedType = rawType != null ? rawType : "sqlite";
         if (!"sqlite".equals(normalizedType) && !"mysql".equals(normalizedType)) {
             throw new IllegalStateException("Unsupported DB_TYPE '" + normalizedType + "'. Allowed values: sqlite, mysql.");
         }
@@ -128,50 +152,170 @@ public class DBConnection {
             if (user == null || user.trim().isEmpty() || password == null || password.isEmpty()) {
                 throw new IllegalStateException("DB_TYPE=mysql requires non-empty DB_USER/MYSQL_USER and DB_PASSWORD/MYSQL_PASSWORD.");
             }
-            if (productionMode && ("root".equalsIgnoreCase(password.trim())
-                    || "replace_with_strong_database_password".equals(password.trim())
+
+            String trimmedUser = user.trim();
+            String trimmedPass = password.trim();
+            if (productionMode && "root".equalsIgnoreCase(trimmedUser)) {
+                throw new IllegalStateException("Production MySQL connections must use a dedicated least-privilege database user; 'root' is forbidden.");
+            }
+            if (productionMode && (
+                    "root".equalsIgnoreCase(trimmedPass)
+                    || "replace_with_strong_database_password".equalsIgnoreCase(trimmedPass)
+                    || "changeme".equalsIgnoreCase(trimmedPass)
+                    || "password".equalsIgnoreCase(trimmedPass)
+                    || "admin123".equalsIgnoreCase(trimmedPass)
                     || password.length() < 8)) {
                 throw new IllegalStateException("Production MySQL password does not meet minimum strength requirements (min 8 chars, non-default).");
+            }
+
+            String resolvedSsl = resolveSslMode(sslMode, sslCaPath, productionMode);
+            if ("DISABLED".equals(resolvedSsl) || "NONE".equals(resolvedSsl)) {
+                throw new IllegalStateException("Insecure MySQL TLS mode '" + resolvedSsl + "' is not permitted. Configure TLS verification.");
+            }
+            if (productionMode && !"VERIFY_CA".equals(resolvedSsl) && !"VERIFY_IDENTITY".equals(resolvedSsl)) {
+                throw new IllegalStateException("Production MySQL requires certificate-verified TLS (DB_SSL_MODE=VERIFY_IDENTITY or VERIFY_CA).");
+            }
+            if (sslCaPath != null && !sslCaPath.trim().isEmpty()) {
+                File caFile = new File(sslCaPath.trim());
+                if (!caFile.isFile() || !caFile.canRead()) {
+                    throw new IllegalStateException("Configured DB_SSL_CA certificate/truststore file does not exist or is unreadable.");
+                }
             }
         }
     }
 
+    public static String resolveSslMode(String configuredSslMode, String sslCaPath, boolean productionMode) {
+        String raw = (configuredSslMode == null || configuredSslMode.trim().isEmpty())
+                ? null
+                : configuredSslMode.trim().toUpperCase(Locale.ROOT);
+        if (raw == null) {
+            if (productionMode) return "VERIFY_IDENTITY";
+            return (sslCaPath != null && !sslCaPath.trim().isEmpty()) ? "VERIFY_CA" : "REQUIRED";
+        }
+        return raw;
+    }
+
     /**
-     * Obtains a JDBC Connection with configured timeouts, foreign-key enforcement,
-     * and immediate write transaction semantics on SQLite.
+     * Builds a TLS-enforced MySQL JDBC connection URL (never emits useSSL=false or allowPublicKeyRetrieval=true).
      */
-    public static Connection getConnection() throws SQLException {
+    public static String buildMySqlJdbcUrl(
+            String host,
+            String port,
+            String dbName,
+            String configuredSslMode,
+            String sslCaPath,
+            String trustStoreType,
+            boolean productionMode) {
+        String sslMode = resolveSslMode(configuredSslMode, sslCaPath, productionMode);
+        if ("DISABLED".equals(sslMode) || "NONE".equals(sslMode)) {
+            throw new IllegalStateException("Insecure MySQL TLS mode '" + sslMode + "' is forbidden.");
+        }
+        if (productionMode && !"VERIFY_CA".equals(sslMode) && !"VERIFY_IDENTITY".equals(sslMode)) {
+            throw new IllegalStateException("Production MySQL requires VERIFY_CA or VERIFY_IDENTITY TLS mode.");
+        }
+
+        StringBuilder sb = new StringBuilder();
+        sb.append("jdbc:mysql://").append(host.trim()).append(":").append(port.trim()).append("/").append(dbName.trim());
+        sb.append("?sslMode=").append(sslMode);
+        sb.append("&tlsVersions=TLSv1.2,TLSv1.3");
+        sb.append("&serverTimezone=UTC&connectTimeout=5000&socketTimeout=10000");
+
+        if (sslCaPath != null && !sslCaPath.trim().isEmpty()) {
+            String trimmedCa = sslCaPath.trim();
+            String lower = trimmedCa.toLowerCase(Locale.ROOT);
+            if (lower.endsWith(".pem") || lower.endsWith(".crt") || lower.endsWith(".cer")) {
+                String[] storeInfo = ensurePemTruststore(trimmedCa);
+                sb.append("&trustCertificateKeyStoreUrl=file:").append(storeInfo[0]);
+                sb.append("&trustCertificateKeyStoreType=PKCS12");
+                sb.append("&trustCertificateKeyStorePassword=").append(storeInfo[1]);
+            } else {
+                String resolvedType = (trustStoreType != null && !trustStoreType.trim().isEmpty())
+                        ? trustStoreType.trim().toUpperCase(Locale.ROOT)
+                        : (lower.endsWith(".p12") || lower.endsWith(".pfx") ? "PKCS12" : "JKS");
+                sb.append("&trustCertificateKeyStoreUrl=file:").append(new File(trimmedCa).getAbsolutePath());
+                sb.append("&trustCertificateKeyStoreType=").append(resolvedType);
+                if (DB_SSL_TRUSTSTORE_PASSWORD != null && !DB_SSL_TRUSTSTORE_PASSWORD.isEmpty()) {
+                    sb.append("&trustCertificateKeyStorePassword=").append(DB_SSL_TRUSTSTORE_PASSWORD);
+                }
+            }
+        }
+        return sb.toString();
+    }
+
+    private static synchronized String[] ensurePemTruststore(String pemPath) {
+        if (cachedPemTruststorePath != null && cachedPemTruststorePassword != null
+                && new File(cachedPemTruststorePath).isFile()) {
+            return new String[]{cachedPemTruststorePath, cachedPemTruststorePassword};
+        }
         try {
-            validateConfiguration();
+            CertificateFactory cf = CertificateFactory.getInstance("X.509");
+            KeyStore ks = KeyStore.getInstance("PKCS12");
+            ks.load(null, null);
+            try (FileInputStream fis = new FileInputStream(pemPath)) {
+                int idx = 0;
+                for (Certificate cert : cf.generateCertificates(fis)) {
+                    ks.setCertificateEntry("mysql-ca-" + (++idx), cert);
+                }
+                if (idx == 0) {
+                    throw new IllegalStateException("DB_SSL_CA PEM file contains no valid X.509 certificates.");
+                }
+            }
+            byte[] randBytes = new byte[18];
+            new SecureRandom().nextBytes(randBytes);
+            String tempPass = Base64.getUrlEncoder().withoutPadding().encodeToString(randBytes);
+            File tempStore = File.createTempFile("mysql_ca_trust_", ".p12");
+            tempStore.deleteOnExit();
+            try (FileOutputStream fos = new FileOutputStream(tempStore)) {
+                ks.store(fos, tempPass.toCharArray());
+            }
+            cachedPemTruststorePath = tempStore.getAbsolutePath();
+            cachedPemTruststorePassword = tempPass;
+            return new String[]{cachedPemTruststorePath, cachedPemTruststorePassword};
+        } catch (IllegalStateException ise) {
+            throw ise;
+        } catch (Exception e) {
+            throw new IllegalStateException("Failed to load DB_SSL_CA certificate file: " + e.getMessage(), e);
+        }
+    }
+
+    private static BoundedConnectionPool getOrCreatePool() throws SQLException {
+        BoundedConnectionPool pool = activePool;
+        if (pool != null && !pool.getStats().closed) {
+            return pool;
+        }
+        synchronized (DBConnection.class) {
+            if (activePool != null && !activePool.getStats().closed) {
+                return activePool;
+            }
+            int minIdle = useMySQL ? DEFAULT_MIN_IDLE : Math.min(1, MAX_POOL_SIZE);
+            BoundedConnectionPool.ConnectionFactory factory = useMySQL
+                    ? DBConnection::createPhysicalMySqlConnection
+                    : DBConnection::createPhysicalSqliteConnection;
+            activePool = new BoundedConnectionPool(factory, MAX_POOL_SIZE, minIdle, POOL_TIMEOUT_MS, POOL_MAX_LIFETIME_MS);
+            return activePool;
+        }
+    }
+
+    private static Connection createPhysicalMySqlConnection() throws SQLException {
+        String mysqlUrl;
+        try {
+            mysqlUrl = buildMySqlJdbcUrl(
+                    DB_HOST, DB_PORT, DB_NAME,
+                    DB_SSL_MODE, DB_SSL_CA, DB_SSL_TRUSTSTORE_TYPE,
+                    isProductionMode()
+            );
         } catch (IllegalStateException ex) {
             throw new SQLException(ex.getMessage(), ex);
         }
-
-        if (useMySQL) {
-            Connection pooled;
-            while ((pooled = mysqlPool.pollFirst()) != null) {
-                try {
-                    if (!pooled.isClosed() && pooled.isValid(2)) {
-                        return wrapPooledConnection(pooled);
-                    }
-                    pooled.close();
-                } catch (SQLException ignored) {
-                    try { pooled.close(); } catch (SQLException ignored2) {}
-                }
-            }
-
-            String mysqlUrl = String.format(
-                    "jdbc:mysql://%s:%s/%s?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC&connectTimeout=5000&socketTimeout=10000",
-                    DB_HOST, DB_PORT, DB_NAME);
-            try {
-                Connection raw = DriverManager.getConnection(mysqlUrl, DB_USER, DB_PASSWORD);
-                return wrapPooledConnection(raw);
-            } catch (SQLException e) {
-                System.err.println("[JDBC] CRITICAL: Configured MySQL database connection failed.");
-                throw new SQLException("Configured MySQL database connection failed.", e);
-            }
+        try {
+            return DriverManager.getConnection(mysqlUrl, DB_USER, DB_PASSWORD);
+        } catch (SQLException e) {
+            System.err.println("[JDBC] CRITICAL: Configured MySQL TLS database connection failed.");
+            throw new SQLException("Configured MySQL database connection failed.", e);
         }
+    }
 
+    private static Connection createPhysicalSqliteConnection() throws SQLException {
         File dbFile = new File(SQLITE_DB_PATH);
         File dir = dbFile.getParentFile();
         if (dir != null && !dir.exists()) {
@@ -186,30 +330,29 @@ public class DBConnection {
         return conn;
     }
 
-    private static Connection wrapPooledConnection(Connection physical) {
-        return (Connection) Proxy.newProxyInstance(
-                Connection.class.getClassLoader(),
-                new Class<?>[]{Connection.class},
-                (proxy, method, args) -> {
-                    if ("close".equals(method.getName())) {
-                        try {
-                            if (!physical.isClosed()) {
-                                if (!physical.getAutoCommit()) {
-                                    physical.rollback();
-                                    physical.setAutoCommit(true);
-                                }
-                                if (mysqlPool.size() < MAX_POOL_SIZE) {
-                                    mysqlPool.offerFirst(physical);
-                                    return null;
-                                }
-                            }
-                        } catch (SQLException ignored) {}
-                        physical.close();
-                        return null;
-                    }
-                    return method.invoke(physical, args);
-                }
-        );
+    /**
+     * Obtains a bounded, validated pooled JDBC Connection with configured timeouts,
+     * TLS verification on MySQL, foreign-key enforcement, and IMMEDIATE write locking on SQLite.
+     */
+    public static Connection getConnection() throws SQLException {
+        try {
+            validateConfiguration();
+        } catch (IllegalStateException ex) {
+            throw new SQLException(ex.getMessage(), ex);
+        }
+        return getOrCreatePool().getConnection();
+    }
+
+    public static BoundedConnectionPool.PoolStats getPoolStats() {
+        BoundedConnectionPool pool = activePool;
+        return pool != null ? pool.getStats() : null;
+    }
+
+    public static synchronized void shutdownPool() {
+        if (activePool != null) {
+            activePool.shutdown();
+            activePool = null;
+        }
     }
 
     /**
@@ -444,11 +587,11 @@ public class DBConnection {
 
     /**
      * Executes idempotent, non-destructive upgrade migrations for both SQLite and MySQL
-     * using JDBC DatabaseMetaData inspection. Preserves all existing user/portfolio/tx data.
+     * using JDBC DatabaseMetaData inspection. Preserves all existing user/portfolio/tx data
+     * and converts legacy DOUBLE/FLOAT/REAL monetary columns safely to DECIMAL(15, 2).
      */
     public static void runMigrations(Connection conn, boolean mysqlMode) throws SQLException {
         try (Statement stmt = conn.createStatement()) {
-            // Ensure migration tracking table exists even on pre-existing DBs
             stmt.execute(
                 "CREATE TABLE IF NOT EXISTS schema_migrations (" +
                 "  version VARCHAR(50) PRIMARY KEY," +
@@ -493,6 +636,255 @@ public class DBConnection {
             ensureIndex(conn, stmt, mysqlMode, "stocks", "idx_stocks_exchange", false, "exchange");
             ensureIndex(conn, stmt, mysqlMode, "watchlist", "idx_user_watchlist", false, "user_id");
             recordMigration(conn, mysqlMode, "003_portfolio_unique_and_consistent_indexes", "Synchronize unique portfolio(user_id, symbol) and indexes");
+
+            // Migration 004: Convert any legacy DOUBLE/FLOAT/REAL monetary columns safely to DECIMAL(15, 2)
+            if (mysqlMode) {
+                migrateMySqlMonetaryColumnsToDecimal(conn);
+            } else {
+                migrateSqliteLegacyDoubleMonetaryColumns(conn);
+            }
+            recordMigration(conn, mysqlMode, "004_monetary_decimal_precision", "Convert legacy DOUBLE/REAL monetary columns safely to DECIMAL(15, 2)");
+        }
+    }
+
+    /**
+     * Generates deterministic MySQL ALTER TABLE MODIFY COLUMN DDL to convert legacy floating-point
+     * monetary columns to exact DECIMAL(15, 2) without dropping tables or losing data.
+     */
+    public static String generateMySqlMonetaryAlterSql(String table, String column, boolean notNull, String defaultExpr) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("ALTER TABLE ").append(table).append(" MODIFY COLUMN ").append(column).append(" DECIMAL(15, 2)");
+        if (notNull) sb.append(" NOT NULL");
+        if (defaultExpr != null && !defaultExpr.isEmpty()) sb.append(" DEFAULT ").append(defaultExpr);
+        return sb.toString();
+    }
+
+    private static void migrateMySqlMonetaryColumnsToDecimal(Connection conn) throws SQLException {
+        String[][] targets = {
+            {"users", "balance", "true", "50000.00"},
+            {"stocks", "price", "true", ""},
+            {"stocks", "previous_price", "true", "0.00"},
+            {"stocks", "day_high", "true", "0.00"},
+            {"stocks", "day_low", "true", "0.00"},
+            {"portfolio", "average_price", "true", ""},
+            {"transactions", "price", "true", ""},
+            {"transactions", "fee_amount", "true", "0.00"},
+            {"transactions", "total_amount", "true", ""}
+        };
+        try (Statement stmt = conn.createStatement()) {
+            for (String[] t : targets) {
+                String table = t[0];
+                String col = t[1];
+                boolean notNull = Boolean.parseBoolean(t[2]);
+                String def = t[3];
+                if (needsMySqlDecimalUpgrade(conn, table, col)) {
+                    stmt.execute(generateMySqlMonetaryAlterSql(table, col, notNull, def));
+                }
+            }
+        }
+    }
+
+    private static boolean needsMySqlDecimalUpgrade(Connection conn, String table, String column) throws SQLException {
+        String sql = "SELECT DATA_TYPE, NUMERIC_PRECISION, NUMERIC_SCALE FROM INFORMATION_SCHEMA.COLUMNS " +
+                     "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?";
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, table);
+            ps.setString(2, column);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) {
+                    String dataType = rs.getString("DATA_TYPE");
+                    int prec = rs.getInt("NUMERIC_PRECISION");
+                    int scale = rs.getInt("NUMERIC_SCALE");
+                    return !"decimal".equalsIgnoreCase(dataType) || prec < 15 || scale != 2;
+                }
+            }
+        }
+        return false;
+    }
+
+    private static boolean sqliteTableHasLegacyFloatingMonetaryColumn(Connection conn, String table, String... columns) throws SQLException {
+        Set<String> targetCols = new HashSet<>(Arrays.asList(columns));
+        try (Statement st = conn.createStatement();
+             ResultSet rs = st.executeQuery("PRAGMA table_info(" + table + ")")) {
+            while (rs.next()) {
+                String name = rs.getString("name");
+                String type = rs.getString("type");
+                if (name != null && targetCols.contains(name.toLowerCase(Locale.ROOT))) {
+                    String upper = type != null ? type.toUpperCase(Locale.ROOT) : "";
+                    if (upper.contains("DOUBLE") || upper.contains("FLOAT") || upper.contains("REAL")) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    private static void migrateSqliteLegacyDoubleMonetaryColumns(Connection conn) throws SQLException {
+        boolean upgradeUsers = sqliteTableHasLegacyFloatingMonetaryColumn(conn, "users", "balance", "alert_threshold_percent");
+        boolean upgradeStocks = sqliteTableHasLegacyFloatingMonetaryColumn(conn, "stocks", "price", "previous_price", "day_high", "day_low");
+        boolean upgradePortfolio = sqliteTableHasLegacyFloatingMonetaryColumn(conn, "portfolio", "average_price");
+        boolean upgradeTransactions = sqliteTableHasLegacyFloatingMonetaryColumn(conn, "transactions", "price", "fee_amount", "total_amount");
+
+        if (!upgradeUsers && !upgradeStocks && !upgradePortfolio && !upgradeTransactions) {
+            return;
+        }
+
+        boolean originalAutoCommit = conn.getAutoCommit();
+        try (Statement st = conn.createStatement()) {
+            st.execute("PRAGMA foreign_keys = OFF;");
+            conn.setAutoCommit(false);
+
+            if (upgradeUsers) {
+                long beforeCount = queryLongScalar(conn, "SELECT COUNT(*) FROM users");
+                double beforeSum = queryDoubleScalar(conn, "SELECT COALESCE(SUM(ROUND(balance, 2)), 0.0) FROM users");
+                st.execute("DROP TABLE IF EXISTS users_mig_new;");
+                st.execute(
+                    "CREATE TABLE users_mig_new (" +
+                    "  id INTEGER PRIMARY KEY AUTOINCREMENT," +
+                    "  user_id VARCHAR(50) UNIQUE NOT NULL," +
+                    "  name VARCHAR(100) NOT NULL," +
+                    "  email VARCHAR(150) UNIQUE NOT NULL," +
+                    "  password VARCHAR(255) NOT NULL," +
+                    "  role VARCHAR(20) NOT NULL CHECK (role IN ('TRADER', 'ADMIN'))," +
+                    "  balance DECIMAL(15, 2) NOT NULL DEFAULT 50000.00 CHECK (balance >= 0)," +
+                    "  department VARCHAR(100)," +
+                    "  email_alerts_enabled INTEGER NOT NULL DEFAULT 1," +
+                    "  alert_threshold_percent DECIMAL(5, 2) NOT NULL DEFAULT 2.00," +
+                    "  must_change_password INTEGER NOT NULL DEFAULT 0," +
+                    "  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP" +
+                    ");"
+                );
+                st.execute(
+                    "INSERT INTO users_mig_new (id, user_id, name, email, password, role, balance, department, email_alerts_enabled, alert_threshold_percent, must_change_password, created_at) " +
+                    "SELECT id, user_id, name, email, password, role, ROUND(balance, 2), department, COALESCE(email_alerts_enabled, 1), ROUND(COALESCE(alert_threshold_percent, 2.00), 2), COALESCE(must_change_password, 0), created_at FROM users;"
+                );
+                long afterCount = queryLongScalar(conn, "SELECT COUNT(*) FROM users_mig_new");
+                double afterSum = queryDoubleScalar(conn, "SELECT COALESCE(SUM(balance), 0.0) FROM users_mig_new");
+                if (beforeCount != afterCount || Math.abs(beforeSum - afterSum) > 0.01) {
+                    throw new SQLException("Migration parity check failed on users table.");
+                }
+                st.execute("DROP TABLE users;");
+                st.execute("ALTER TABLE users_mig_new RENAME TO users;");
+                st.execute("CREATE INDEX IF NOT EXISTS idx_users_role ON users(role);");
+            }
+
+            if (upgradeStocks) {
+                long beforeCount = queryLongScalar(conn, "SELECT COUNT(*) FROM stocks");
+                st.execute("DROP TABLE IF EXISTS stocks_mig_new;");
+                st.execute(
+                    "CREATE TABLE stocks_mig_new (" +
+                    "  id INTEGER PRIMARY KEY AUTOINCREMENT," +
+                    "  symbol VARCHAR(20) UNIQUE NOT NULL," +
+                    "  company_name VARCHAR(150) NOT NULL," +
+                    "  exchange VARCHAR(10) NOT NULL DEFAULT 'NSE'," +
+                    "  price DECIMAL(15, 2) NOT NULL CHECK (price > 0)," +
+                    "  available_quantity INTEGER NOT NULL CHECK (available_quantity >= 0)," +
+                    "  status VARCHAR(20) NOT NULL DEFAULT 'ACTIVE' CHECK (status IN ('ACTIVE', 'HALTED', 'DISABLED'))," +
+                    "  previous_price DECIMAL(15, 2) DEFAULT 0.00," +
+                    "  day_high DECIMAL(15, 2) DEFAULT 0.00," +
+                    "  day_low DECIMAL(15, 2) DEFAULT 0.00," +
+                    "  volume_traded BIGINT DEFAULT 0" +
+                    ");"
+                );
+                st.execute(
+                    "INSERT INTO stocks_mig_new (id, symbol, company_name, exchange, price, available_quantity, status, previous_price, day_high, day_low, volume_traded) " +
+                    "SELECT id, symbol, company_name, exchange, ROUND(price, 2), available_quantity, status, ROUND(COALESCE(previous_price, 0.00), 2), ROUND(COALESCE(day_high, 0.00), 2), ROUND(COALESCE(day_low, 0.00), 2), COALESCE(volume_traded, 0) FROM stocks;"
+                );
+                long afterCount = queryLongScalar(conn, "SELECT COUNT(*) FROM stocks_mig_new");
+                if (beforeCount != afterCount) {
+                    throw new SQLException("Migration parity check failed on stocks table.");
+                }
+                st.execute("DROP TABLE stocks;");
+                st.execute("ALTER TABLE stocks_mig_new RENAME TO stocks;");
+                st.execute("CREATE INDEX IF NOT EXISTS idx_stocks_exchange ON stocks(exchange);");
+            }
+
+            if (upgradePortfolio) {
+                long beforeCount = queryLongScalar(conn, "SELECT COUNT(*) FROM portfolio");
+                st.execute("DROP TABLE IF EXISTS portfolio_mig_new;");
+                st.execute(
+                    "CREATE TABLE portfolio_mig_new (" +
+                    "  id INTEGER PRIMARY KEY AUTOINCREMENT," +
+                    "  user_id VARCHAR(50) NOT NULL," +
+                    "  stock_id INTEGER NOT NULL DEFAULT 0," +
+                    "  symbol VARCHAR(20) NOT NULL," +
+                    "  quantity INTEGER NOT NULL CHECK (quantity > 0)," +
+                    "  average_price DECIMAL(15, 2) NOT NULL CHECK (average_price >= 0)," +
+                    "  UNIQUE(user_id, symbol)," +
+                    "  FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE" +
+                    ");"
+                );
+                st.execute(
+                    "INSERT INTO portfolio_mig_new (id, user_id, stock_id, symbol, quantity, average_price) " +
+                    "SELECT id, user_id, stock_id, symbol, quantity, ROUND(average_price, 2) FROM portfolio;"
+                );
+                long afterCount = queryLongScalar(conn, "SELECT COUNT(*) FROM portfolio_mig_new");
+                if (beforeCount != afterCount) {
+                    throw new SQLException("Migration parity check failed on portfolio table.");
+                }
+                st.execute("DROP TABLE portfolio;");
+                st.execute("ALTER TABLE portfolio_mig_new RENAME TO portfolio;");
+                st.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_portfolio_user_symbol ON portfolio(user_id, symbol);");
+                st.execute("CREATE INDEX IF NOT EXISTS idx_portfolio_user ON portfolio(user_id);");
+            }
+
+            if (upgradeTransactions) {
+                long beforeCount = queryLongScalar(conn, "SELECT COUNT(*) FROM transactions");
+                double beforeSum = queryDoubleScalar(conn, "SELECT COALESCE(SUM(ROUND(total_amount, 2)), 0.0) FROM transactions");
+                st.execute("DROP TABLE IF EXISTS transactions_mig_new;");
+                st.execute(
+                    "CREATE TABLE transactions_mig_new (" +
+                    "  id INTEGER PRIMARY KEY AUTOINCREMENT," +
+                    "  user_id VARCHAR(50) NOT NULL," +
+                    "  stock_id INTEGER NOT NULL DEFAULT 0," +
+                    "  symbol VARCHAR(20) NOT NULL," +
+                    "  transaction_type VARCHAR(10) NOT NULL CHECK (transaction_type IN ('BUY', 'SELL'))," +
+                    "  quantity INTEGER NOT NULL CHECK (quantity > 0)," +
+                    "  price DECIMAL(15, 2) NOT NULL CHECK (price > 0)," +
+                    "  fee_amount DECIMAL(15, 2) NOT NULL DEFAULT 0.00 CHECK (fee_amount >= 0)," +
+                    "  total_amount DECIMAL(15, 2) NOT NULL CHECK (total_amount >= 0)," +
+                    "  idempotency_key VARCHAR(100)," +
+                    "  transaction_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP," +
+                    "  FOREIGN KEY (user_id) REFERENCES users(user_id)" +
+                    ");"
+                );
+                st.execute(
+                    "INSERT INTO transactions_mig_new (id, user_id, stock_id, symbol, transaction_type, quantity, price, fee_amount, total_amount, idempotency_key, transaction_date) " +
+                    "SELECT id, user_id, stock_id, symbol, transaction_type, quantity, ROUND(price, 2), ROUND(COALESCE(fee_amount, 0.00), 2), ROUND(total_amount, 2), idempotency_key, transaction_date FROM transactions;"
+                );
+                long afterCount = queryLongScalar(conn, "SELECT COUNT(*) FROM transactions_mig_new");
+                double afterSum = queryDoubleScalar(conn, "SELECT COALESCE(SUM(total_amount), 0.0) FROM transactions_mig_new");
+                if (beforeCount != afterCount || Math.abs(beforeSum - afterSum) > 0.01) {
+                    throw new SQLException("Migration parity check failed on transactions table.");
+                }
+                st.execute("DROP TABLE transactions;");
+                st.execute("ALTER TABLE transactions_mig_new RENAME TO transactions;");
+                st.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_tx_user_idempotency ON transactions(user_id, idempotency_key);");
+                st.execute("CREATE INDEX IF NOT EXISTS idx_user_tx ON transactions(user_id, transaction_date);");
+            }
+
+            conn.commit();
+        } catch (SQLException ex) {
+            try { conn.rollback(); } catch (SQLException ignored) {}
+            throw ex;
+        } finally {
+            try { conn.setAutoCommit(originalAutoCommit); } catch (SQLException ignored) {}
+            try (Statement st = conn.createStatement()) {
+                st.execute("PRAGMA foreign_keys = ON;");
+            } catch (SQLException ignored) {}
+        }
+    }
+
+    private static long queryLongScalar(Connection conn, String sql) throws SQLException {
+        try (Statement st = conn.createStatement(); ResultSet rs = st.executeQuery(sql)) {
+            return rs.next() ? rs.getLong(1) : 0L;
+        }
+    }
+
+    private static double queryDoubleScalar(Connection conn, String sql) throws SQLException {
+        try (Statement st = conn.createStatement(); ResultSet rs = st.executeQuery(sql)) {
+            return rs.next() ? rs.getDouble(1) : 0.0;
         }
     }
 
@@ -582,26 +974,26 @@ public class DBConnection {
 
     private static void seedInitialData(Connection conn) throws SQLException {
         boolean isProd = isProductionMode();
-        boolean seedDemoExplicit = "true".equalsIgnoreCase(System.getenv("SEED_DEMO_ACCOUNTS"));
+        boolean seedDemoExplicit = "true".equalsIgnoreCase(EnvConfig.get("SEED_DEMO_ACCOUNTS"));
 
         try (PreparedStatement ps = conn.prepareStatement("SELECT COUNT(*) FROM users");
              ResultSet rs = ps.executeQuery()) {
             if (rs.next() && rs.getInt(1) == 0) {
                 if (isProd && !seedDemoExplicit) {
-                    String adminUser = System.getenv("ADMIN_BOOTSTRAP_USER");
-                    String adminEmail = System.getenv("ADMIN_BOOTSTRAP_EMAIL");
-                    String adminPass = System.getenv("ADMIN_BOOTSTRAP_PASSWORD");
-                    if (adminUser != null && !adminUser.trim().isEmpty()
-                            && adminEmail != null && !adminEmail.trim().isEmpty()
+                    String adminUser = EnvConfig.get("ADMIN_BOOTSTRAP_USER");
+                    String adminEmail = EnvConfig.get("ADMIN_BOOTSTRAP_EMAIL");
+                    String adminPass = EnvConfig.get("ADMIN_BOOTSTRAP_PASSWORD");
+                    if (adminUser != null && !adminUser.isEmpty()
+                            && adminEmail != null && !adminEmail.isEmpty()
                             && adminPass != null && adminPass.length() >= 8) {
                         try (PreparedStatement ins = conn.prepareStatement(
                                 "INSERT INTO users (user_id, name, email, password, role, balance, department, must_change_password) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")) {
-                            ins.setString(1, adminUser.trim());
+                            ins.setString(1, adminUser);
                             ins.setString(2, "Platform Administrator");
-                            ins.setString(3, adminEmail.trim());
+                            ins.setString(3, adminEmail);
                             ins.setString(4, PasswordHasher.hashPassword(adminPass));
                             ins.setString(5, "ADMIN");
-                            ins.setDouble(6, 0.0);
+                            ins.setBigDecimal(6, MoneyUtil.ZERO);
                             ins.setString(7, "Enterprise Market Operations");
                             ins.setInt(8, 0);
                             ins.executeUpdate();
@@ -611,7 +1003,7 @@ public class DBConnection {
                         System.out.println("[JDBC] Production mode detected with empty users table: skipped default demo credentials.");
                     }
                 } else {
-                    System.out.println("[JDBC] Seeding development/demo users into database with BCrypt hashes...");
+                    System.out.println("[JDBC] Seeding local development demo users into database with BCrypt hashes...");
                     try (PreparedStatement ins = conn.prepareStatement(
                             "INSERT INTO users (user_id, name, email, password, role, balance, department, must_change_password) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")) {
                         ins.setString(1, "admin");
@@ -619,7 +1011,7 @@ public class DBConnection {
                         ins.setString(3, "admin@tradingplatform.internal");
                         ins.setString(4, PasswordHasher.hashPassword("admin123"));
                         ins.setString(5, "ADMIN");
-                        ins.setDouble(6, 0.0);
+                        ins.setBigDecimal(6, MoneyUtil.ZERO);
                         ins.setString(7, "Enterprise Market Operations");
                         ins.setInt(8, 1);
                         ins.executeUpdate();
@@ -629,7 +1021,7 @@ public class DBConnection {
                         ins.setString(3, "alex.morgan@quantcap.com");
                         ins.setString(4, PasswordHasher.hashPassword("trader123"));
                         ins.setString(5, "TRADER");
-                        ins.setDouble(6, 45280.00);
+                        ins.setBigDecimal(6, new java.math.BigDecimal("45280.00"));
                         ins.setString(7, null);
                         ins.setInt(8, 1);
                         ins.executeUpdate();
@@ -639,7 +1031,7 @@ public class DBConnection {
                         ins.setString(3, "elena.r@hedgealpha.io");
                         ins.setString(4, PasswordHasher.hashPassword("trader123"));
                         ins.setString(5, "TRADER");
-                        ins.setDouble(6, 85600.00);
+                        ins.setBigDecimal(6, new java.math.BigDecimal("85600.00"));
                         ins.setString(7, null);
                         ins.setInt(8, 1);
                         ins.executeUpdate();
@@ -659,7 +1051,9 @@ public class DBConnection {
                         service.StockImportService importer = new service.StockImportService(new dao.StockDAO());
                         int count = importer.importStocksFromCSV(csvMaster.getAbsolutePath());
                         importedFromCSV = count > 0;
-                    } catch (Exception ignored) {}
+                    } catch (Exception csvEx) {
+                        System.err.println("[JDBC] CSV catalog import fallback triggered: " + csvEx.getMessage());
+                    }
                 }
 
                 if (!importedFromCSV) {
@@ -691,12 +1085,12 @@ public class DBConnection {
                             ins.setString(1, s[0]);
                             ins.setString(2, s[1]);
                             ins.setString(3, s[2]);
-                            ins.setDouble(4, Double.parseDouble(s[3]));
+                            ins.setBigDecimal(4, new java.math.BigDecimal(s[3]));
                             ins.setInt(5, Integer.parseInt(s[4]));
                             ins.setString(6, s[5]);
-                            ins.setDouble(7, Double.parseDouble(s[6]));
-                            ins.setDouble(8, Double.parseDouble(s[7]));
-                            ins.setDouble(9, Double.parseDouble(s[8]));
+                            ins.setBigDecimal(7, new java.math.BigDecimal(s[6]));
+                            ins.setBigDecimal(8, new java.math.BigDecimal(s[7]));
+                            ins.setBigDecimal(9, new java.math.BigDecimal(s[8]));
                             ins.setLong(10, Long.parseLong(s[9]));
                             ins.executeUpdate();
                         }
@@ -715,9 +1109,9 @@ public class DBConnection {
                         if (rs.next() && rs.getInt(1) == 0) {
                             try (PreparedStatement ins = conn.prepareStatement(
                                     "INSERT INTO portfolio (user_id, stock_id, symbol, quantity, average_price) VALUES (?, ?, ?, ?, ?)")) {
-                                ins.setString(1, "trader1"); ins.setInt(2, 1); ins.setString(3, "RELIANCE"); ins.setInt(4, 20); ins.setDouble(5, 2900.00); ins.executeUpdate();
-                                ins.setString(1, "trader1"); ins.setInt(2, 2); ins.setString(3, "TCS"); ins.setInt(4, 10); ins.setDouble(5, 4150.00); ins.executeUpdate();
-                                ins.setString(1, "trader1"); ins.setInt(2, 4); ins.setString(3, "INFY"); ins.setInt(4, 25); ins.setDouble(5, 1850.00); ins.executeUpdate();
+                                ins.setString(1, "trader1"); ins.setInt(2, 1); ins.setString(3, "RELIANCE"); ins.setInt(4, 20); ins.setBigDecimal(5, new java.math.BigDecimal("2900.00")); ins.executeUpdate();
+                                ins.setString(1, "trader1"); ins.setInt(2, 2); ins.setString(3, "TCS"); ins.setInt(4, 10); ins.setBigDecimal(5, new java.math.BigDecimal("4150.00")); ins.executeUpdate();
+                                ins.setString(1, "trader1"); ins.setInt(2, 4); ins.setString(3, "INFY"); ins.setInt(4, 25); ins.setBigDecimal(5, new java.math.BigDecimal("1850.00")); ins.executeUpdate();
                             }
                         }
                     }
@@ -754,8 +1148,15 @@ public class DBConnection {
             map.put("databaseVersion", meta.getDatabaseProductVersion());
             map.put("driverName", meta.getDriverName());
             map.put("driverVersion", meta.getDriverVersion());
-            map.put("engineType", useMySQL ? "MySQL (Relational Production)" : "SQLite (Embedded Relational ACID)");
+            map.put("engineType", useMySQL ? "MySQL (Relational Production TLS)" : "SQLite (Embedded Relational ACID)");
             map.put("jdbcUrl", useMySQL ? "jdbc:mysql://[configured-host]/[configured-db]" : "jdbc:sqlite:[embedded-storage]");
+
+            BoundedConnectionPool.PoolStats stats = getPoolStats();
+            if (stats != null) {
+                map.put("poolMaxSize", stats.maxPoolSize);
+                map.put("poolActive", stats.activeConnections);
+                map.put("poolIdle", stats.idleConnections);
+            }
 
             String[] tables = {"users", "stocks", "portfolio", "transactions", "watchlist"};
             Map<String, Integer> counts = new HashMap<>();

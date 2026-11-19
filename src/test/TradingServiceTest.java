@@ -55,6 +55,7 @@ public class TradingServiceTest {
         testConcurrentBuyAndSellThreadSafety();
         testConcurrentLimitedBalanceBuyRaceCondition();
         testRealDatabaseFailureRollbackOnBuyAndSell();
+        testBigDecimalDaoAndTransactionValidation();
 
         System.out.printf("TradingServiceTest Results: %d/%d Passed.\n\n", testsPassed, testsRun);
         return testsPassed == testsRun;
@@ -482,6 +483,26 @@ public class TradingServiceTest {
                 st.execute("DROP TRIGGER IF EXISTS " + triggerName);
             } catch (SQLException ignored) {}
             cleanupTestEntities(uid, sym);
+        }
+    }
+
+    public static void testBigDecimalDaoAndTransactionValidation() {
+        PortfolioDAO portfolioDAO = new PortfolioDAO();
+        TransactionDAO transactionDAO = new TransactionDAO();
+        try (Connection conn = DBConnection.getConnection()) {
+            boolean badBuyRejected = !portfolioDAO.recordBuy(conn, "trader1", 1, "RELIANCE", 5, BigDecimal.ZERO);
+            boolean badTxRejected = false;
+            try {
+                Transaction invalidTx = new Transaction("trader1", 1, "RELIANCE", "BUY", 0,
+                        new BigDecimal("100.00"), MoneyUtil.ZERO, MoneyUtil.ZERO, null);
+                transactionDAO.insert(conn, invalidTx);
+            } catch (SQLException expected) {
+                badTxRejected = true;
+            }
+            assertTrue(badBuyRejected && badTxRejected,
+                    "testBigDecimalDaoAndTransactionValidation - DAO guards reject zero price and zero quantity cleanly");
+        } catch (Exception e) {
+            assertTrue(false, "testBigDecimalDaoAndTransactionValidation - Unexpected exception: " + e.getMessage());
         }
     }
 }

@@ -39,8 +39,8 @@ export const TraderSettingsView: React.FC<TraderSettingsViewProps> = ({ currentU
       setPassMsg('New passwords do not match.');
       return;
     }
-    if (newPass.length < 6) {
-      setPassMsg('Password must be at least 6 characters.');
+    if (newPass.length < 8 || !/[A-Z]/.test(newPass) || !/[a-z]/.test(newPass) || !/[0-9]/.test(newPass) || !/[^A-Za-z0-9\s]/.test(newPass)) {
+      setPassMsg('Password must be 8+ chars and include uppercase, lowercase, digit, and special character.');
       return;
     }
     setPassMsg('Password updated successfully.');

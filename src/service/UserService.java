@@ -47,25 +47,35 @@ public class UserService implements IUserService {
         if (user == null) {
             throw new InvalidInputException("User cannot be null.");
         }
-        if (user.getUserId() == null || user.getUserId().trim().isEmpty()) {
-            throw new InvalidInputException("User ID cannot be blank.");
+        String uid = user.getUserId() != null ? user.getUserId().trim() : "";
+        if (uid.isEmpty() || !uid.matches("^[a-zA-Z0-9_-]{3,40}$")) {
+            throw new InvalidInputException("User ID must be 3-40 alphanumeric, underscore, or hyphen characters.");
         }
-        if (user.getEmail() == null || !user.getEmail().contains("@")) {
+        String rawEmail = user.getEmail() != null ? user.getEmail().trim().toLowerCase(java.util.Locale.ROOT) : "";
+        if (!rawEmail.matches("^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}$")) {
             throw new InvalidInputException("A valid email address is required.");
         }
-        if (user.getPassword() == null || user.getPassword().length() < 6) {
-            throw new InvalidInputException("Password must be at least 6 characters long.");
+        String rawName = user.getName() != null ? user.getName().trim() : "";
+        if (rawName.length() < 2 || rawName.length() > 100) {
+            throw new InvalidInputException("Name must be between 2 and 100 characters.");
+        }
+        String rawPassword = user.getPassword();
+        if (rawPassword == null || rawPassword.isEmpty()) {
+            throw new InvalidInputException("Password is required.");
         }
 
-        String uid = user.getUserId().trim();
+        boolean alreadyHashedOrLegacy = PasswordHasher.isBCryptHash(rawPassword) || PasswordHasher.isLegacyMarkedPassword(rawPassword);
+        if (!alreadyHashedOrLegacy) {
+            String strengthError = PasswordHasher.validatePasswordStrength(rawPassword);
+            if (strengthError != null) {
+                throw new InvalidInputException(strengthError);
+            }
+            user.setPassword(PasswordHasher.hashPassword(rawPassword));
+        }
+
         user.setUserId(uid);
-        user.setEmail(user.getEmail().trim());
-
-        // Hash raw password with BCrypt unless already hashed or explicitly marked legacy for migration tests
-        if (!PasswordHasher.isBCryptHash(user.getPassword()) &&
-            !PasswordHasher.isLegacyMarkedPassword(user.getPassword())) {
-            user.setPassword(PasswordHasher.hashPassword(user.getPassword()));
-        }
+        user.setName(rawName);
+        user.setEmail(rawEmail);
 
         if (!jdbcAuthoritative) {
             if (isolatedTestMap.containsKey(uid)) {
@@ -196,24 +206,28 @@ public class UserService implements IUserService {
         User user = getUserById(userId);
 
         if (name != null && !name.trim().isEmpty()) {
-            user.setName(name.trim());
+            String trimmedName = name.trim();
+            if (trimmedName.length() < 2 || trimmedName.length() > 100) {
+                throw new InvalidInputException("Name must be between 2 and 100 characters.");
+            }
+            user.setName(trimmedName);
         }
         if (email != null && !email.trim().isEmpty()) {
-            if (!email.contains("@")) {
+            String trimmedEmail = email.trim().toLowerCase(java.util.Locale.ROOT);
+            if (!trimmedEmail.matches("^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}$")) {
                 throw new InvalidInputException("Invalid email format.");
             }
-            String trimmedEmail = email.trim();
             if (!jdbcAuthoritative) {
                 for (User u : isolatedTestMap.values()) {
                     if (!u.getUserId().equalsIgnoreCase(userId) && u.getEmail().equalsIgnoreCase(trimmedEmail)) {
-                        throw new InvalidInputException("Email '" + email + "' is already in use by another user.");
+                        throw new InvalidInputException("Email '" + trimmedEmail + "' is already in use by another user.");
                     }
                 }
             } else {
                 try {
                     User existingWithEmail = userDAO.findByEmail(trimmedEmail);
                     if (existingWithEmail != null && !existingWithEmail.getUserId().equalsIgnoreCase(user.getUserId())) {
-                        throw new InvalidInputException("Email '" + email + "' is already in use by another user.");
+                        throw new InvalidInputException("Email '" + trimmedEmail + "' is already in use by another user.");
                     }
                 } catch (SQLException e) {
                     throw new InvalidInputException("Database validation failed: " + e.getMessage());
@@ -221,11 +235,12 @@ public class UserService implements IUserService {
             }
             user.setEmail(trimmedEmail);
         }
-        if (password != null && !password.trim().isEmpty()) {
-            if (password.length() < 6) {
-                throw new InvalidInputException("Password must be at least 6 characters.");
-            }
+        if (password != null && !password.isEmpty()) {
             if (!PasswordHasher.isBCryptHash(password)) {
+                String strengthError = PasswordHasher.validatePasswordStrength(password);
+                if (strengthError != null) {
+                    throw new InvalidInputException(strengthError);
+                }
                 user.setPassword(PasswordHasher.hashPassword(password));
             } else {
                 user.setPassword(password);

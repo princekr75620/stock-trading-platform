@@ -40,13 +40,25 @@ public class AdminSettingsServlet extends BaseServlet {
 
         try {
             if (p.containsKey("exchangeName")) {
-                cur.setExchangeName(p.get("exchangeName"));
+                String exName = p.get("exchangeName");
+                if (exName == null || exName.trim().isEmpty()) {
+                    throw new IllegalArgumentException("exchangeName cannot be empty.");
+                }
+                cur.setExchangeName(exName.trim());
             }
             if (p.containsKey("tradingFeePercent")) {
-                cur.setTradingFeePercentage(Double.parseDouble(p.get("tradingFeePercent")));
+                double feePct = Double.parseDouble(p.get("tradingFeePercent"));
+                if (!Double.isFinite(feePct) || feePct < 0 || feePct > 10.0) {
+                    throw new IllegalArgumentException("tradingFeePercent must be between 0 and 10.");
+                }
+                cur.setTradingFeePercentage(feePct);
             }
             if (p.containsKey("marketUpdateIntervalSeconds")) {
-                cur.setMarketUpdateIntervalSeconds(Integer.parseInt(p.get("marketUpdateIntervalSeconds")));
+                int interval = Integer.parseInt(p.get("marketUpdateIntervalSeconds"));
+                if (interval < 1 || interval > 3600) {
+                    throw new IllegalArgumentException("marketUpdateIntervalSeconds must be between 1 and 3600.");
+                }
+                cur.setMarketUpdateIntervalSeconds(interval);
             }
             if (p.containsKey("maintenanceMode")) {
                 cur.setMaintenanceMode("true".equalsIgnoreCase(p.get("maintenanceMode")));
@@ -65,9 +77,13 @@ public class AdminSettingsServlet extends BaseServlet {
             sendJsonResponse(response, HttpServletResponse.SC_OK,
                     "{\"success\":true,\"message\":\"System settings updated successfully\",\"settings\":" +
                             JsonHelper.systemSettingsToJson(cur, metrics) + "}");
-        } catch (Exception ex) {
+        } catch (IllegalArgumentException ex) {
             sendJsonResponse(response, HttpServletResponse.SC_BAD_REQUEST,
-                    "{\"success\":false,\"error\":\"Invalid system settings: " + JsonHelper.escape(ex.getMessage()) + "\"}");
+                    "{\"success\":false,\"error\":\"" + JsonHelper.escape(ex.getMessage()) + "\"}");
+        } catch (Exception ex) {
+            System.err.println("[AdminSettingsServlet] Error updating system settings: " + ex.getMessage());
+            sendJsonResponse(response, HttpServletResponse.SC_INTERNAL_SERVER_ERROR,
+                    "{\"success\":false,\"error\":\"Unable to update system settings.\"}");
         }
     }
 }

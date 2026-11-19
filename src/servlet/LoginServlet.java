@@ -48,9 +48,13 @@ public class LoginServlet extends BaseServlet {
                 sendJsonResponse(response, HttpServletResponse.SC_UNAUTHORIZED,
                         "{\"success\":false,\"error\":\"Invalid username/email or password.\"}");
             }
-        } catch (Exception e) {
+        } catch (exception.InvalidLoginException e) {
             sendJsonResponse(response, HttpServletResponse.SC_UNAUTHORIZED,
                     String.format("{\"success\":false,\"error\":\"%s\"}", JsonHelper.escape(e.getMessage())));
+        } catch (Exception e) {
+            System.err.println("[LoginServlet] Unexpected authentication backend error: " + e.getMessage());
+            sendJsonResponse(response, HttpServletResponse.SC_INTERNAL_SERVER_ERROR,
+                    "{\"success\":false,\"error\":\"Authentication service is temporarily unavailable.\"}");
         }
     }
 }

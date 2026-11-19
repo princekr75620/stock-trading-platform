@@ -47,7 +47,7 @@ public class SecurityService implements ISecurityService {
         incidents.add(new SecurityIncident(
                 "INC-1003",
                 "HIGH_VALUE_TRADE_ALERT",
-                "Trade order of $75,000 flagged for secondary verification threshold",
+                "Trade order of ₹75,000 flagged for secondary verification threshold",
                 SecurityIncident.Severity.HIGH,
                 LocalDateTime.now().minusMinutes(45),
                 SecurityIncident.Status.OPEN,
@@ -101,10 +101,49 @@ public class SecurityService implements ISecurityService {
 
     @Override
     public String getSecurityHealthScore() {
-        int open = getOpenIncidentCount();
-        if (open == 0) return "OPTIMAL (98/100)";
-        if (open <= 2) return "GOOD (92/100) - Minor active incidents";
-        if (open <= 5) return "ELEVATED (78/100) - Action needed";
-        return "CRITICAL (55/100) - Immediate intervention required";
+        int score = 100;
+        int openCritical = 0;
+        int openHigh = 0;
+        int openMedium = 0;
+        int openLow = 0;
+
+        for (SecurityIncident inc : incidents) {
+            if (inc.getStatus() == SecurityIncident.Status.OPEN ||
+                inc.getStatus() == SecurityIncident.Status.INVESTIGATING) {
+                switch (inc.getSeverity()) {
+                    case CRITICAL: openCritical++; break;
+                    case HIGH: openHigh++; break;
+                    case MEDIUM: openMedium++; break;
+                    case LOW: openLow++; break;
+                }
+            }
+        }
+
+        score -= openCritical * 22;
+        score -= openHigh * 10;
+        score -= openMedium * 5;
+        score -= openLow * 2;
+
+        if (settings != null) {
+            if (!settings.isAutomaticAccountLockout()) score -= 12;
+            if (!settings.isRequireSpecialChar() || settings.getMinPasswordLength() < 8) score -= 8;
+            if (!settings.isIpAnomalyDetection()) score -= 5;
+            if (settings.getSessionTimeoutMinutes() > 60) score -= 5;
+            if (!settings.isRequireTwoStepForHighValueTrades()) score -= 5;
+        }
+
+        score = Math.max(0, Math.min(100, score));
+        int open = openCritical + openHigh + openMedium + openLow;
+
+        if (score >= 95 && open == 0) {
+            return "OPTIMAL (" + score + "/100)";
+        }
+        if (score >= 85) {
+            return "GOOD (" + score + "/100)" + (open > 0 ? " - Minor active incidents" : "");
+        }
+        if (score >= 65) {
+            return "ELEVATED (" + score + "/100) - Action needed";
+        }
+        return "CRITICAL (" + score + "/100) - Immediate intervention required";
     }
 }

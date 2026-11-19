@@ -29,7 +29,7 @@ public class AdminSecurityServlet extends BaseServlet {
         List<SecurityIncident> incidents = securityService.getAllIncidents();
         StringBuilder sb = new StringBuilder("{");
         sb.append("\"settings\":").append(JsonHelper.securitySettingsToJson(sec)).append(",");
-        sb.append("\"healthScore\":\"").append(securityService.getSecurityHealthScore()).append("\",");
+        sb.append("\"healthScore\":\"").append(JsonHelper.escape(securityService.getSecurityHealthScore())).append("\",");
         sb.append("\"openIncidentsCount\":").append(securityService.getOpenIncidentCount()).append(",");
         sb.append("\"incidents\":[");
         for (int i = 0; i < incidents.size(); i++) {
@@ -53,25 +53,35 @@ public class AdminSecurityServlet extends BaseServlet {
 
         try {
             if (p.containsKey("minimumPasswordLength")) {
-                cur.setMinPasswordLength(Integer.parseInt(p.get("minimumPasswordLength")));
+                int minLen = Integer.parseInt(p.get("minimumPasswordLength"));
+                if (minLen < 8 || minLen > 128) throw new IllegalArgumentException("minimumPasswordLength must be 8-128.");
+                cur.setMinPasswordLength(minLen);
             }
             if (p.containsKey("requireSpecialCharacters")) {
                 cur.setRequireSpecialChar("true".equalsIgnoreCase(p.get("requireSpecialCharacters")));
             }
             if (p.containsKey("passwordExpiryDays")) {
-                cur.setPasswordExpiryDays(Integer.parseInt(p.get("passwordExpiryDays")));
+                int expiry = Integer.parseInt(p.get("passwordExpiryDays"));
+                if (expiry < 1 || expiry > 3650) throw new IllegalArgumentException("passwordExpiryDays must be 1-3650.");
+                cur.setPasswordExpiryDays(expiry);
             }
             if (p.containsKey("maxFailedLoginAttempts")) {
-                cur.setMaxFailedLoginAttempts(Integer.parseInt(p.get("maxFailedLoginAttempts")));
+                int maxAttempts = Integer.parseInt(p.get("maxFailedLoginAttempts"));
+                if (maxAttempts < 1 || maxAttempts > 20) throw new IllegalArgumentException("maxFailedLoginAttempts must be 1-20.");
+                cur.setMaxFailedLoginAttempts(maxAttempts);
             }
             if (p.containsKey("sessionTimeoutMinutes")) {
-                cur.setSessionTimeoutMinutes(Integer.parseInt(p.get("sessionTimeoutMinutes")));
+                int timeoutMin = Integer.parseInt(p.get("sessionTimeoutMinutes"));
+                if (timeoutMin < 5 || timeoutMin > 1440) throw new IllegalArgumentException("sessionTimeoutMinutes must be 5-1440.");
+                cur.setSessionTimeoutMinutes(timeoutMin);
             }
             if (p.containsKey("autoLockoutEnabled")) {
                 cur.setAutomaticAccountLockout("true".equalsIgnoreCase(p.get("autoLockoutEnabled")));
             }
             if (p.containsKey("highValueTradeThreshold")) {
-                cur.setHighValueTradeThreshold(Double.parseDouble(p.get("highValueTradeThreshold")));
+                double threshold = Double.parseDouble(p.get("highValueTradeThreshold"));
+                if (!Double.isFinite(threshold) || threshold < 0) throw new IllegalArgumentException("highValueTradeThreshold must be non-negative.");
+                cur.setHighValueTradeThreshold(threshold);
             }
             if (p.containsKey("requireTwoStepForHighValue")) {
                 cur.setRequireTwoStepForHighValueTrades("true".equalsIgnoreCase(p.get("requireTwoStepForHighValue")));
@@ -84,9 +94,13 @@ public class AdminSecurityServlet extends BaseServlet {
             sendJsonResponse(response, HttpServletResponse.SC_OK,
                     "{\"success\":true,\"message\":\"Security settings updated successfully\",\"settings\":" +
                             JsonHelper.securitySettingsToJson(cur) + "}");
-        } catch (Exception ex) {
+        } catch (IllegalArgumentException ex) {
             sendJsonResponse(response, HttpServletResponse.SC_BAD_REQUEST,
-                    "{\"success\":false,\"error\":\"Invalid security configuration: " + JsonHelper.escape(ex.getMessage()) + "\"}");
+                    "{\"success\":false,\"error\":\"" + JsonHelper.escape(ex.getMessage()) + "\"}");
+        } catch (Exception ex) {
+            System.err.println("[AdminSecurityServlet] Error updating security configuration: " + ex.getMessage());
+            sendJsonResponse(response, HttpServletResponse.SC_INTERNAL_SERVER_ERROR,
+                    "{\"success\":false,\"error\":\"Unable to update security configuration.\"}");
         }
     }
 }

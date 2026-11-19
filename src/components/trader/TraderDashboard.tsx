@@ -40,7 +40,7 @@ export const TraderDashboard: React.FC<TraderDashboardProps> = ({
             </span>
           </h1>
           <p className="text-sm text-slate-500 mt-1">
-            Real-time equity valuations, portfolio P&amp;L performance, and order execution desk.
+            Simulated / delayed equity valuations, portfolio P&amp;L performance, and paper order execution desk.
           </p>
         </div>
         <div className="flex items-center space-x-2">
@@ -67,7 +67,7 @@ export const TraderDashboard: React.FC<TraderDashboardProps> = ({
               <span>🇮🇳 Welcome to Bharat Stocks! Ready to make your first trade?</span>
             </h3>
             <p className="text-xs text-slate-600 mt-0.5">
-              Your ₹{(portfolio?.cashBalance ?? currentUser.cashBalance ?? 50000).toLocaleString('en-IN')} INR paper margin is ready. Pick top equities like Reliance, TCS, INFY or Tata Motors in the live watchlist!
+              Your ₹{(portfolio?.cashBalance ?? currentUser.cashBalance ?? 50000).toLocaleString('en-IN')} INR paper margin is ready. Pick top equities like Reliance, TCS, INFY or Tata Motors in the market watchlist!
             </p>
           </div>
           <button

@@ -300,6 +300,10 @@ public class ServletBridge {
                         case "getMethod": return method;
                         case "getRequestURI": return path;
                         case "getQueryString": return queryString;
+                        case "getProtocol": {
+                            String protocol = exchange.getProtocol();
+                            return (protocol != null && !protocol.isEmpty()) ? protocol : "HTTP/1.1";
+                        }
                         case "getScheme": {
                             String proto = getFirstHeader(exchange, "X-Forwarded-Proto");
                             return (proto != null && !proto.isEmpty()) ? proto : "http";
@@ -368,12 +372,28 @@ public class ServletBridge {
                         case "setStatus":
                             status[0] = (Integer) args[0];
                             return null;
+                        case "sendError": {
+                            int errStatus = (Integer) args[0];
+                            status[0] = errStatus;
+                            if (buffer.size() == 0) {
+                                String errMsg = (args.length > 1 && args[1] != null)
+                                        ? String.valueOf(args[1])
+                                        : ("HTTP error " + errStatus);
+                                headers.putIfAbsent("Content-Type", "application/json;charset=UTF-8");
+                                writer.write(String.format("{\"success\":false,\"error\":\"%s\"}", JsonHelper.escape(errMsg)));
+                                writer.flush();
+                            }
+                            return null;
+                        }
                         case "getStatus":
                             return status[0];
                         case "setContentType":
                             headers.put("Content-Type", (String) args[0]);
                             return null;
+                        case "setCharacterEncoding":
+                            return null;
                         case "setHeader":
+                        case "addHeader":
                             headers.put((String) args[0], (String) args[1]);
                             return null;
                         case "getWriter":

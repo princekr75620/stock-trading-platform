@@ -974,71 +974,13 @@ public class DBConnection {
 
     private static void seedInitialData(Connection conn) throws SQLException {
         boolean isProd = isProductionMode();
-        boolean seedDemoExplicit = "true".equalsIgnoreCase(EnvConfig.get("SEED_DEMO_ACCOUNTS"));
-
-        try (PreparedStatement ps = conn.prepareStatement("SELECT COUNT(*) FROM users");
-             ResultSet rs = ps.executeQuery()) {
-            if (rs.next() && rs.getInt(1) == 0) {
-                if (isProd && !seedDemoExplicit) {
-                    String adminUser = EnvConfig.get("ADMIN_BOOTSTRAP_USER");
-                    String adminEmail = EnvConfig.get("ADMIN_BOOTSTRAP_EMAIL");
-                    String adminPass = EnvConfig.get("ADMIN_BOOTSTRAP_PASSWORD");
-                    if (adminUser != null && !adminUser.isEmpty()
-                            && adminEmail != null && !adminEmail.isEmpty()
-                            && adminPass != null && adminPass.length() >= 8) {
-                        try (PreparedStatement ins = conn.prepareStatement(
-                                "INSERT INTO users (user_id, name, email, password, role, balance, department, must_change_password) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")) {
-                            ins.setString(1, adminUser);
-                            ins.setString(2, "Platform Administrator");
-                            ins.setString(3, adminEmail);
-                            ins.setString(4, PasswordHasher.hashPassword(adminPass));
-                            ins.setString(5, "ADMIN");
-                            ins.setBigDecimal(6, MoneyUtil.ZERO);
-                            ins.setString(7, "Enterprise Market Operations");
-                            ins.setInt(8, 0);
-                            ins.executeUpdate();
-                        }
-                        System.out.println("[JDBC] Provisioned production bootstrap admin account from environment variables.");
-                    } else {
-                        System.out.println("[JDBC] Production mode detected with empty users table: skipped default demo credentials.");
-                    }
-                } else {
-                    System.out.println("[JDBC] Seeding local development demo users into database with BCrypt hashes...");
-                    try (PreparedStatement ins = conn.prepareStatement(
-                            "INSERT INTO users (user_id, name, email, password, role, balance, department, must_change_password) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")) {
-                        ins.setString(1, "admin");
-                        ins.setString(2, "Chief Risk Officer");
-                        ins.setString(3, "admin@tradingplatform.internal");
-                        ins.setString(4, PasswordHasher.hashPassword("admin123"));
-                        ins.setString(5, "ADMIN");
-                        ins.setBigDecimal(6, MoneyUtil.ZERO);
-                        ins.setString(7, "Enterprise Market Operations");
-                        ins.setInt(8, 1);
-                        ins.executeUpdate();
-
-                        ins.setString(1, "trader1");
-                        ins.setString(2, "Alexander Morgan");
-                        ins.setString(3, "alex.morgan@quantcap.com");
-                        ins.setString(4, PasswordHasher.hashPassword("trader123"));
-                        ins.setString(5, "TRADER");
-                        ins.setBigDecimal(6, new java.math.BigDecimal("45280.00"));
-                        ins.setString(7, null);
-                        ins.setInt(8, 1);
-                        ins.executeUpdate();
-
-                        ins.setString(1, "trader2");
-                        ins.setString(2, "Elena Rostova");
-                        ins.setString(3, "elena.r@hedgealpha.io");
-                        ins.setString(4, PasswordHasher.hashPassword("trader123"));
-                        ins.setString(5, "TRADER");
-                        ins.setBigDecimal(6, new java.math.BigDecimal("85600.00"));
-                        ins.setString(7, null);
-                        ins.setInt(8, 1);
-                        ins.executeUpdate();
-                    }
-                }
-            }
-        }
+        seedUsersIfEmpty(
+                conn,
+                isProd,
+                EnvConfig.get("ADMIN_BOOTSTRAP_USER"),
+                EnvConfig.get("ADMIN_BOOTSTRAP_EMAIL"),
+                EnvConfig.get("ADMIN_BOOTSTRAP_PASSWORD")
+        );
 
         // Seed Indian stocks catalog (non-sensitive reference market data)
         try (PreparedStatement ps = conn.prepareStatement("SELECT COUNT(*) FROM stocks");
@@ -1099,7 +1041,7 @@ public class DBConnection {
             }
         }
 
-        if (!isProd || seedDemoExplicit) {
+        if (!isProd) {
             try (PreparedStatement chk = conn.prepareStatement("SELECT COUNT(*) FROM users WHERE user_id = 'trader1'");
                  ResultSet urs = chk.executeQuery()) {
                 boolean hasTrader1 = urs.next() && urs.getInt(1) > 0;
@@ -1133,6 +1075,96 @@ public class DBConnection {
                     }
                 }
             }
+        }
+    }
+
+    /**
+     * Seeds initial user records strictly when the users table is empty.
+     * In production mode, default demo credentials (admin/trader1/trader2) are NEVER inserted;
+     * only validated ADMIN_BOOTSTRAP_* credentials are accepted if explicitly provided.
+     */
+    public static void seedUsersIfEmpty(Connection conn, boolean isProd,
+                                        String adminUser, String adminEmail, String adminPass) throws SQLException {
+        try (PreparedStatement ps = conn.prepareStatement("SELECT COUNT(*) FROM users");
+             ResultSet rs = ps.executeQuery()) {
+            if (rs.next() && rs.getInt(1) > 0) {
+                return;
+            }
+        }
+
+        if (isProd) {
+            String u = adminUser != null ? adminUser.trim() : "";
+            String e = adminEmail != null ? adminEmail.trim().toLowerCase(Locale.ROOT) : "";
+            String p = adminPass != null ? adminPass : "";
+
+            boolean anyProvided = !u.isEmpty() || !e.isEmpty() || !p.isEmpty();
+            if (!anyProvided) {
+                System.out.println("[JDBC] Production mode detected with empty users table: skipped default demo credentials.");
+                return;
+            }
+            if (u.isEmpty() || e.isEmpty() || p.isEmpty()) {
+                throw new SQLException("Production bootstrap admin configuration invalid: ADMIN_BOOTSTRAP_USER, ADMIN_BOOTSTRAP_EMAIL, and ADMIN_BOOTSTRAP_PASSWORD must all be provided together.");
+            }
+            if (!u.matches("^[a-zA-Z0-9_-]{3,40}$")) {
+                throw new SQLException("Production bootstrap admin configuration invalid: ADMIN_BOOTSTRAP_USER must be 3-40 alphanumeric, underscore, or hyphen characters.");
+            }
+            if (!e.matches("^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}$")) {
+                throw new SQLException("Production bootstrap admin configuration invalid: ADMIN_BOOTSTRAP_EMAIL must be a valid email address.");
+            }
+            String strengthError = PasswordHasher.validatePasswordStrength(p);
+            if (strengthError != null) {
+                throw new SQLException("Production bootstrap admin configuration invalid: " + strengthError);
+            }
+
+            try (PreparedStatement ins = conn.prepareStatement(
+                    "INSERT INTO users (user_id, name, email, password, role, balance, department, must_change_password) " +
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)")) {
+                ins.setString(1, u);
+                ins.setString(2, "Platform Administrator");
+                ins.setString(3, e);
+                ins.setString(4, PasswordHasher.hashPassword(p));
+                ins.setString(5, "ADMIN");
+                ins.setBigDecimal(6, new java.math.BigDecimal("0.00"));
+                ins.setString(7, "Executive Operations");
+                ins.setInt(8, 0);
+                ins.executeUpdate();
+            }
+            return;
+        }
+
+        // Development / Evaluation mode default accounts with BCrypt hashes and password-change notice flag
+        try (PreparedStatement ins = conn.prepareStatement(
+                "INSERT INTO users (user_id, name, email, password, role, balance, department, must_change_password) " +
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)")) {
+            ins.setString(1, "admin");
+            ins.setString(2, "Platform Administrator");
+            ins.setString(3, "admin@apex.com");
+            ins.setString(4, PasswordHasher.hashPassword("admin123"));
+            ins.setString(5, "ADMIN");
+            ins.setBigDecimal(6, new java.math.BigDecimal("0.00"));
+            ins.setString(7, "Executive Operations");
+            ins.setInt(8, 1);
+            ins.executeUpdate();
+
+            ins.setString(1, "trader1");
+            ins.setString(2, "Alex Mercer");
+            ins.setString(3, "alex@apex.com");
+            ins.setString(4, PasswordHasher.hashPassword("trader123"));
+            ins.setString(5, "TRADER");
+            ins.setBigDecimal(6, new java.math.BigDecimal("50000.00"));
+            ins.setNull(7, Types.VARCHAR);
+            ins.setInt(8, 1);
+            ins.executeUpdate();
+
+            ins.setString(1, "trader2");
+            ins.setString(2, "Elena Vance");
+            ins.setString(3, "elena@apex.com");
+            ins.setString(4, PasswordHasher.hashPassword("trader123"));
+            ins.setString(5, "TRADER");
+            ins.setBigDecimal(6, new java.math.BigDecimal("75000.00"));
+            ins.setNull(7, Types.VARCHAR);
+            ins.setInt(8, 1);
+            ins.executeUpdate();
         }
     }
 

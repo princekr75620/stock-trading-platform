@@ -25,7 +25,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [usersList, setUsersList] = useState<User[]>([]);
   const [securitySettings, setSecuritySettings] = useState<SecuritySettings | null>(null);
   const [securityIncidents, setSecurityIncidents] = useState<SecurityIncident[]>([]);
-  const [securityScore, setSecurityScore] = useState('EXCELLENT (98%)');
+  const [securityScore, setSecurityScore] = useState('Loading...');
+  const [fetchError, setFetchError] = useState<string | null>(null);
   const [systemSettings, setSystemSettings] = useState<SystemSettings | null>(null);
   const [allTrades, setAllTrades] = useState<Trade[]>([]);
   const [stocksList, setStocksList] = useState<Stock[]>([]);
@@ -87,6 +88,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   // Fetch all administrative telemetry from Java backend
   const fetchAdminData = async () => {
     setLoading(true);
+    setFetchError(null);
     try {
       const [st, users, secInfo, sys, trades, stks] = await Promise.all([
         api.getAdminStats(),
@@ -94,18 +96,19 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         api.getSecurityInfo(),
         api.getSystemSettings(),
         api.getTrades(),
-        api.getStocks().catch(() => []),
+        api.getStocks(),
       ]);
       setStats(st);
       setUsersList(users);
       setSecuritySettings(secInfo.settings);
       setSecurityIncidents(secInfo.incidents);
-      setSecurityScore(secInfo.healthScore);
+      setSecurityScore(secInfo.healthScore || 'Unavailable');
       setSystemSettings(sys);
       setAllTrades(trades);
       setStocksList(stks || []);
     } catch (err: any) {
-      console.error('Error loading admin data:', err);
+      setSecurityScore('Unavailable');
+      setFetchError(err?.message || 'Unable to load administrative telemetry from server.');
     } finally {
       setLoading(false);
     }
@@ -359,6 +362,18 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   return (
     <div className="space-y-6">
       {/* Messages */}
+      {fetchError && (
+        <div className="p-3 bg-red-50 border border-red-200 text-red-700 text-sm rounded flex items-center justify-between gap-2">
+          <span>{fetchError}</span>
+          <button
+            type="button"
+            onClick={fetchAdminData}
+            className="px-2.5 py-1 bg-red-100 hover:bg-red-200 text-red-800 rounded text-xs font-semibold"
+          >
+            Retry
+          </button>
+        </div>
+      )}
       {userActionError && (
         <div className="p-3 bg-red-50 border border-red-200 text-red-700 text-sm rounded">
           {userActionError}
@@ -408,8 +423,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             </div>
             <div className="bg-white border border-gray-200 rounded p-4 shadow-sm">
               <span className="text-xs font-medium text-gray-500 uppercase">Trading Volume</span>
-              <div className="text-2xl font-bold text-gray-900 mt-1">${tradingVol.toLocaleString('en-US', { maximumFractionDigits: 0 })}</div>
-              <span className="text-[11px] text-gray-400">Cumulative turnover</span>
+              <div className="text-2xl font-bold text-gray-900 mt-1">₹{tradingVol.toLocaleString('en-IN', { maximumFractionDigits: 0 })}</div>
+              <span className="text-[11px] text-gray-400">Cumulative turnover (INR)</span>
             </div>
             <div className="bg-white border border-gray-200 rounded p-4 shadow-sm">
               <span className="text-xs font-medium text-blue-600 uppercase">Buy Orders</span>
@@ -496,8 +511,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                           </span>
                         </td>
                         <td className="py-2.5 px-3 text-gray-800">{t.quantity}</td>
-                        <td className="py-2.5 px-3 text-gray-800">${(t.price ?? 0).toFixed(2)}</td>
-                        <td className="py-2.5 px-4 font-semibold text-gray-900">${(t.totalAmount ?? 0).toFixed(2)}</td>
+                        <td className="py-2.5 px-3 text-gray-800">₹{(t.price ?? 0).toFixed(2)}</td>
+                        <td className="py-2.5 px-4 font-semibold text-gray-900">₹{(t.totalAmount ?? 0).toFixed(2)}</td>
                         <td className="py-2.5 px-4 text-xs text-gray-500">{t.dateTime}</td>
                       </tr>
                     ))
@@ -591,7 +606,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                         </span>
                       </td>
                       <td className="py-3 px-4 font-medium text-right text-gray-900">
-                        {u.role === 'TRADER' ? `$${(u.cashBalance ?? 0).toLocaleString('en-US', { minimumFractionDigits: 2 })}` : 'N/A'}
+                        {u.role === 'TRADER' ? `₹${(u.cashBalance ?? 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}` : 'N/A'}
                       </td>
                       <td className="py-3 px-4 text-center">
                         <div className="inline-flex space-x-2">
@@ -666,7 +681,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   <tr>
                     <th className="py-3 px-4 font-semibold">Symbol</th>
                     <th className="py-3 px-4 font-semibold">Company Name</th>
-                    <th className="py-3 px-4 font-semibold text-right">Price (USD)</th>
+                    <th className="py-3 px-4 font-semibold text-right">Price (INR)</th>
                     <th className="py-3 px-4 font-semibold text-right">Day Range</th>
                     <th className="py-3 px-4 font-semibold text-right">Available Float</th>
                     <th className="py-3 px-4 font-semibold text-right">Volume</th>
@@ -679,10 +694,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                       <td className="py-3 px-4 font-mono font-bold text-sm text-gray-900">{s.symbol}</td>
                       <td className="py-3 px-4 font-medium text-gray-900">{s.name}</td>
                       <td className="py-3 px-4 font-semibold text-right text-gray-900">
-                        ${(s.currentPrice ?? 0).toFixed(2)}
+                        ₹{(s.currentPrice ?? 0).toFixed(2)}
                       </td>
                       <td className="py-3 px-4 text-xs text-right text-gray-500 font-mono">
-                        ${(s.dayLow ?? s.currentPrice ?? 0).toFixed(2)} - ${(s.dayHigh ?? s.currentPrice ?? 0).toFixed(2)}
+                        ₹{(s.dayLow ?? s.currentPrice ?? 0).toFixed(2)} - ₹{(s.dayHigh ?? s.currentPrice ?? 0).toFixed(2)}
                       </td>
                       <td className="py-3 px-4 text-right text-gray-700 font-mono">
                         {(s.availableQuantity ?? 0).toLocaleString()}
@@ -752,17 +767,17 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             <div className="bg-white border border-gray-200 rounded p-4 shadow-sm">
               <span className="text-xs font-medium text-gray-500 uppercase">Security Health</span>
               <div className="text-xl font-bold text-green-600 mt-1">{securityScore}</div>
-              <p className="text-xs text-gray-500 mt-1">SHA-256 Hashing &amp; Session Isolation</p>
+              <p className="text-xs text-gray-500 mt-1">BCrypt ($2a$12$) &amp; Session Isolation</p>
             </div>
             <div className="bg-white border border-gray-200 rounded p-4 shadow-sm">
               <span className="text-xs font-medium text-gray-500 uppercase">Active Incidents</span>
               <div className="text-xl font-bold text-gray-900 mt-1">{securityIncidents.length} Logged</div>
-              <p className="text-xs text-gray-500 mt-1">Real-time access violations recorded</p>
+              <p className="text-xs text-gray-500 mt-1">Policy-weighted incident audit stream</p>
             </div>
             <div className="bg-white border border-gray-200 rounded p-4 shadow-sm">
-              <span className="text-xs font-medium text-gray-500 uppercase">Encryption Standard</span>
-              <div className="text-xl font-bold text-gray-900 mt-1">AES-256 / SHA-256</div>
-              <p className="text-xs text-gray-500 mt-1">Java Security provider standard</p>
+              <span className="text-xs font-medium text-gray-500 uppercase">Auth &amp; Session Controls</span>
+              <div className="text-xl font-bold text-gray-900 mt-1">BCrypt / HttpOnly + CSRF</div>
+              <p className="text-xs text-gray-500 mt-1">Work factor 12 &amp; origin-verified CSRF</p>
             </div>
           </div>
 
@@ -803,7 +818,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 <div className="flex items-center justify-between p-3 border border-gray-200 rounded">
                   <div>
                     <span className="font-medium text-gray-900">Audit Logging</span>
-                    <p className="text-xs text-gray-500">Write cryptographic hash audit entries into data/security_log.txt</p>
+                    <p className="text-xs text-gray-500">Record security policy &amp; incident events in server audit stream</p>
                   </div>
                   <input
                     type="checkbox"
@@ -958,8 +973,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
                 <div className="flex items-center justify-between py-2 border-b border-gray-100">
                   <div>
-                    <span className="font-semibold text-gray-900">Default Starting Trader Balance ($)</span>
-                    <p className="text-xs text-gray-500">Cash credit assigned automatically to newly registered traders</p>
+                    <span className="font-semibold text-gray-900">Default Starting Trader Balance (₹)</span>
+                    <p className="text-xs text-gray-500">INR paper credit assigned automatically to newly registered traders</p>
                   </div>
                   <input
                     type="number"
@@ -1054,8 +1069,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                           </span>
                         </td>
                         <td className="py-3 px-3 text-gray-800 font-medium">{t.quantity}</td>
-                        <td className="py-3 px-3 text-gray-800">${(t.price ?? 0).toFixed(2)}</td>
-                        <td className="py-3 px-4 font-semibold text-gray-900">${(t.totalAmount ?? 0).toFixed(2)}</td>
+                        <td className="py-3 px-3 text-gray-800">₹{(t.price ?? 0).toFixed(2)}</td>
+                        <td className="py-3 px-4 font-semibold text-gray-900">₹{(t.totalAmount ?? 0).toFixed(2)}</td>
                         <td className="py-3 px-4 text-xs text-gray-500">{t.dateTime}</td>
                       </tr>
                     ))
@@ -1217,7 +1232,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   required
                   value={newUserPassword}
                   onChange={(e) => setNewUserPassword(e.target.value)}
-                  placeholder="Minimum 6 characters"
+                  placeholder="Min 8 chars (A-Z, a-z, 0-9, symbol)"
                   className="w-full px-3 py-1.5 border border-gray-300 rounded focus:ring-1 focus:ring-blue-500"
                 />
               </div>
@@ -1236,7 +1251,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
               {newUserRole === 'TRADER' && (
                 <div>
-                  <label className="block text-xs font-medium text-gray-700 mb-1">Initial Cash Balance ($)</label>
+                  <label className="block text-xs font-medium text-gray-700 mb-1">Initial Cash Balance (₹)</label>
                   <input
                     type="number"
                     min="100"
@@ -1406,7 +1421,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-xs font-medium text-gray-700 mb-1">Initial Price ($)</label>
+                  <label className="block text-xs font-medium text-gray-700 mb-1">Initial Price (₹)</label>
                   <input
                     type="number"
                     step="0.01"
@@ -1478,7 +1493,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-xs font-medium text-gray-700 mb-1">Market Price ($)</label>
+                  <label className="block text-xs font-medium text-gray-700 mb-1">Market Price (₹)</label>
                   <input
                     type="number"
                     step="0.01"

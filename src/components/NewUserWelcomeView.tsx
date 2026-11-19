@@ -26,7 +26,7 @@ export const NewUserWelcomeView: React.FC<NewUserWelcomeViewProps> = ({
             <div className="inline-flex items-center space-x-2 px-3 py-1 rounded-full bg-orange-500/10 border border-orange-500/30 text-orange-400 text-xs font-bold">
               <span>🇮🇳 Bharat Stocks Onboarding</span>
               <span>&bull;</span>
-              <span>SEBI Compliant</span>
+              <span>Paper Trading Account</span>
             </div>
 
             <h1 className="text-2xl sm:text-4xl font-extrabold text-white tracking-tight">
@@ -73,10 +73,10 @@ export const NewUserWelcomeView: React.FC<NewUserWelcomeViewProps> = ({
             1
           </div>
           <h3 className="font-bold text-slate-900 text-base">
-            Explore Live Watchlist
+            Explore Market Watchlist
           </h3>
           <p className="text-xs text-slate-600 leading-relaxed">
-            Monitor real-time market prices of top Indian blue-chip equities: Reliance, TCS, HDFC Bank, Infosys, and Tata Motors.
+            Monitor delayed &amp; simulated quotes of top Indian blue-chip equities: Reliance, TCS, HDFC Bank, Infosys, and Tata Motors.
           </p>
           <div className="pt-2">
             <span className="text-[11px] font-semibold text-orange-600">NSE / BSE Tickers &bull; 09:15 - 15:30 IST</span>
@@ -111,7 +111,7 @@ export const NewUserWelcomeView: React.FC<NewUserWelcomeViewProps> = ({
             View your weighted average cost basis, unrealized profit &amp; loss, and asset allocation percentages dynamically in INR (₹).
           </p>
           <div className="pt-2">
-            <span className="text-[11px] font-semibold text-blue-600">Weighted Average Cost &bull; Real-time Valuations</span>
+            <span className="text-[11px] font-semibold text-blue-600">Weighted Average Cost &bull; Simulated Valuations</span>
           </div>
         </div>
       </div>

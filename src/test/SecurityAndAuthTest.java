@@ -50,7 +50,9 @@ public class SecurityAndAuthTest {
         testLegacyPasswordMigration();
         testValidAndInvalidLogin();
         testAccountLockoutPolicy();
+        testTimeBoundedLockoutExpiryAndParallelLoginConcurrency();
         testRegistrationAdminPrivilegeEscalationPrevented();
+        testWeakPasswordAndDynamicSecurityScore();
         testNormalUserDeniedAdminAccess();
         testForgedAdminHeadersRejected();
         testStrictCsrfAndLogoutEnforcement();
@@ -628,5 +630,85 @@ public class SecurityAndAuthTest {
                     }
             );
         }
+    }
+
+    public static void testTimeBoundedLockoutExpiryAndParallelLoginConcurrency() {
+        SecuritySettings settings = new SecuritySettings();
+        settings.setAutomaticAccountLockout(true);
+        settings.setMaxFailedLoginAttempts(3);
+        SecurityService secService = new SecurityService(settings, null);
+
+        String hash1 = PasswordHasher.hashPassword("LockExpire@2026!");
+        String hash2 = PasswordHasher.hashPassword("OtherUser@2026!");
+        Map<String, User> userMap = new HashMap<>();
+        userMap.put("expLockUser", new Trader("expLockUser", "Expire User", "explock@trade.in", hash1, 50000.0));
+        userMap.put("otherCleanUser", new Trader("otherCleanUser", "Clean User", "clean@trade.in", hash2, 50000.0));
+        IUserService userService = new UserService(userMap);
+
+        AuthenticationService shortLockAuth = new AuthenticationService(userService, secService, 2500L);
+        for (int i = 0; i < 3; i++) {
+            try {
+                shortLockAuth.login("expLockUser", "WrongPass" + i);
+            } catch (InvalidLoginException ignored) {}
+        }
+
+        boolean lockedInitially = false;
+        try {
+            shortLockAuth.login("expLockUser", "LockExpire@2026!");
+        } catch (InvalidLoginException e) {
+            lockedInitially = e.getMessage().toLowerCase().contains("locked");
+        }
+
+        // Other user is completely unaffected while expLockUser is locked
+        boolean otherUserSucceeded = false;
+        try {
+            User other = shortLockAuth.login("otherCleanUser", "OtherUser@2026!");
+            otherUserSucceeded = (other != null && "otherCleanUser".equals(other.getUserId()));
+        } catch (Exception ignored) {}
+
+        try {
+            Thread.sleep(2600L);
+        } catch (InterruptedException ignored) {}
+
+        boolean unlockedAfterExpiry = false;
+        try {
+            User recovered = shortLockAuth.login("expLockUser", "LockExpire@2026!");
+            unlockedAfterExpiry = (recovered != null && "expLockUser".equals(recovered.getUserId()));
+        } catch (Exception ignored) {}
+
+        assertTrue(lockedInitially && otherUserSucceeded && unlockedAfterExpiry
+                        && shortLockAuth.getCurrentUser() == null && !shortLockAuth.isAuthenticated(),
+                "testTimeBoundedLockoutExpiry - Lockout expires automatically after duration without locking unrelated users or retaining mutable currentUser");
+    }
+
+    public static void testWeakPasswordAndDynamicSecurityScore() {
+        servlet.RegisterServlet registerServlet = new servlet.RegisterServlet();
+        IUserService userService = new UserService(new HashMap<>());
+        servlet.BaseServlet.initializeServices(userService, null, null, null, null, null, null, null, null);
+
+        MockHttpServletRequest weakReq = new MockHttpServletRequest("POST", "/api/auth/register", null);
+        weakReq.body = "{\"name\":\"Weak Pass\",\"email\":\"weakpass@test.in\",\"password\":\"123456\"}";
+        MockHttpServletResponse weakResp = new MockHttpServletResponse();
+        try {
+            registerServlet.doPost(weakReq.toProxy(), weakResp.toProxy());
+        } catch (Exception ignored) {}
+        assertTrue(weakResp.status == 400 && weakResp.body.toString().contains("8 characters"),
+                "testWeakPassword - RegisterServlet rejects short/weak passwords (<8 chars / missing complexity) with HTTP 400");
+
+        SecuritySettings strongPolicy = new SecuritySettings();
+        SecurityService cleanSec = new SecurityService(strongPolicy, null);
+        String optimalScore = cleanSec.getSecurityHealthScore();
+
+        cleanSec.recordIncident(new SecurityIncident(
+                "INC-CRIT-1", "PRIVILEGE_ESCALATION_ATTEMPT", "Critical alert",
+                SecurityIncident.Severity.CRITICAL, java.time.LocalDateTime.now(),
+                SecurityIncident.Status.OPEN, "10.0.0.1"
+        ));
+        strongPolicy.setAutomaticAccountLockout(false);
+        cleanSec.updateSecuritySettings(strongPolicy);
+        String degradedScore = cleanSec.getSecurityHealthScore();
+
+        assertTrue(optimalScore.contains("100/100") && !degradedScore.equals(optimalScore) && !degradedScore.contains("100/100"),
+                "testDynamicSecurityScore - SecurityService computes health score dynamically from incidents & SecuritySettings");
     }
 }

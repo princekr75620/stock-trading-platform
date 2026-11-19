@@ -271,7 +271,7 @@ public class AuthenticationFilter implements Filter {
 
     public static Set<String> getConfiguredAllowedOrigins() {
         Set<String> set = new HashSet<>();
-        String envOrigins = System.getenv("ALLOWED_ORIGINS");
+        String envOrigins = util.EnvConfig.get("ALLOWED_ORIGINS");
         if (envOrigins != null && !envOrigins.trim().isEmpty()) {
             for (String item : envOrigins.split(",")) {
                 String trimmed = item.trim().toLowerCase();

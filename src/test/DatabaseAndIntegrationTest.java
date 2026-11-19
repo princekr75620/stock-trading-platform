@@ -58,6 +58,7 @@ public class DatabaseAndIntegrationTest {
         testConfigurationValidationAndMigrations();
         testEnvConfigAndTlsConfiguration();
         testBoundedConnectionPoolLifecycle();
+        testProductionSeedingPolicy();
         testLegacyDoubleToDecimalUpgradeMigration();
         testRegistrationAndLoginValidation();
         testDatabaseCRUDOperations();
@@ -374,6 +375,40 @@ public class DatabaseAndIntegrationTest {
                     "POOL-6: Expired physical connection beyond maxLifetimeMs retired and replaced cleanly");
             refreshed.close();
             agedPool.shutdown();
+
+            // POOL-7: When rollback() fails on close(), skip setAutoCommit(true) and physically discard broken connection
+            java.util.concurrent.atomic.AtomicBoolean setAutoCommitTrueCalledAfterRollbackFail = new java.util.concurrent.atomic.AtomicBoolean(false);
+            java.util.concurrent.atomic.AtomicBoolean physicalClosedOnRollbackFail = new java.util.concurrent.atomic.AtomicBoolean(false);
+            BoundedConnectionPool brokenPool = new BoundedConnectionPool(() -> (Connection) java.lang.reflect.Proxy.newProxyInstance(
+                    Connection.class.getClassLoader(),
+                    new Class<?>[]{Connection.class},
+                    (p, m, args) -> {
+                        switch (m.getName()) {
+                            case "getAutoCommit": return false;
+                            case "setAutoCommit":
+                                if (args != null && args.length == 1 && Boolean.TRUE.equals(args[0])) {
+                                    setAutoCommitTrueCalledAfterRollbackFail.set(true);
+                                }
+                                return null;
+                            case "rollback":
+                                throw new SQLException("Simulated socket reset during rollback");
+                            case "isClosed": return physicalClosedOnRollbackFail.get();
+                            case "close":
+                                physicalClosedOnRollbackFail.set(true);
+                                return null;
+                            default: return null;
+                        }
+                    }
+            ), 2, 0, 200, 60_000);
+            Connection dirtyConn = brokenPool.getConnection();
+            dirtyConn.close();
+            BoundedConnectionPool.PoolStats afterBrokenStats = brokenPool.getStats();
+            assertTrue(!setAutoCommitTrueCalledAfterRollbackFail.get()
+                            && physicalClosedOnRollbackFail.get()
+                            && afterBrokenStats.totalConnections == 0
+                            && afterBrokenStats.idleConnections == 0,
+                    "POOL-7: Broken connection after rollback failure skips setAutoCommit(true) and is discarded from pool");
+            brokenPool.shutdown();
         } catch (Exception e) {
             e.printStackTrace();
             assertTrue(false, "POOL: Unexpected error in pool test: " + e.getMessage());
@@ -468,7 +503,7 @@ public class DatabaseAndIntegrationTest {
         UserDAO userDAO = new UserDAO();
         String testUid = "reg_test_" + System.currentTimeMillis();
         String testEmail = testUid + "@college.edu";
-        String rawPassword = "StrongStudentPassword@2026";
+        String rawPassword = "StrongStudentCred@2026";
 
         User newTrader = new Trader(testUid, "College Review Student", testEmail, rawPassword, 50000.0);
         IUserService userService = new UserService();
@@ -482,7 +517,7 @@ public class DatabaseAndIntegrationTest {
 
             boolean duplicateBlocked = false;
             try {
-                User dupTrader = new Trader("dup_" + testUid, "Duplicate", testEmail, "pass123", 50000.0);
+                User dupTrader = new Trader("dup_" + testUid, "Duplicate", testEmail, "StrongDup@2026!", 50000.0);
                 userService.createUser(dupTrader);
             } catch (DuplicateUserException e) {
                 duplicateBlocked = true;
@@ -790,5 +825,57 @@ public class DatabaseAndIntegrationTest {
                 "UI-4: Stock entity format conforms to frontend StocksView and TradeModal contracts");
 
         System.out.println(">>> All Relational DB & Integration Criteria Verified Successfully!\n");
+    }
+
+    public static void testProductionSeedingPolicy() {
+        System.out.println(">>> 1f. Testing Production User Seeding Policy...");
+        java.io.File tempDb = null;
+        try {
+            tempDb = java.io.File.createTempFile("prod_seed_test_", ".db");
+            String url = "jdbc:sqlite:" + tempDb.getAbsolutePath() + "?busy_timeout=5000&transaction_mode=IMMEDIATE";
+            try (Connection conn = java.sql.DriverManager.getConnection(url)) {
+                DBConnection.initializeSchemaAndMigrate(conn, false);
+
+                // 1. Production mode with no bootstrap env vars MUST NOT seed default demo accounts
+                DBConnection.seedUsersIfEmpty(conn, true, null, null, null);
+                int countNoBootstrap = 0;
+                try (java.sql.Statement st = conn.createStatement();
+                     java.sql.ResultSet rs = st.executeQuery("SELECT COUNT(*) FROM users")) {
+                    if (rs.next()) countNoBootstrap = rs.getInt(1);
+                }
+                assertTrue(countNoBootstrap == 0,
+                        "SEED-1: Production mode with empty users table never inserts demo credentials (admin/trader1/trader2)");
+
+                // 2. Production mode rejects weak bootstrap admin password without leaking secret
+                boolean weakRejected = false;
+                try {
+                    DBConnection.seedUsersIfEmpty(conn, true, "prodadmin", "ops@bharatstocks.in", "admin123");
+                } catch (SQLException expected) {
+                    weakRejected = expected.getMessage().contains("bootstrap admin") && !expected.getMessage().contains("admin123");
+                }
+                assertTrue(weakRejected, "SEED-2: Production mode rejects weak ADMIN_BOOTSTRAP_PASSWORD safely");
+
+                // 3. Production mode accepts strong bootstrap admin credentials with BCrypt hash
+                DBConnection.seedUsersIfEmpty(conn, true, "prodadmin", "ops@bharatstocks.in", "ProdAdmin#2026!");
+                int countWithBootstrap = 0;
+                String storedRole = "";
+                String storedPass = "";
+                try (java.sql.Statement st = conn.createStatement();
+                     java.sql.ResultSet rs = st.executeQuery("SELECT user_id, role, password FROM users")) {
+                    while (rs.next()) {
+                        countWithBootstrap++;
+                        storedRole = rs.getString("role");
+                        storedPass = rs.getString("password");
+                    }
+                }
+                assertTrue(countWithBootstrap == 1 && "ADMIN".equals(storedRole) && PasswordHasher.isBCryptHash(storedPass),
+                        "SEED-3: Validated production ADMIN_BOOTSTRAP_* creates single BCrypt ADMIN account without demo traders");
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+            assertTrue(false, "SEED: Unexpected exception in production seeding test: " + e.getMessage());
+        } finally {
+            if (tempDb != null && tempDb.exists()) tempDb.delete();
+        }
     }
 }

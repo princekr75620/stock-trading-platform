@@ -86,21 +86,26 @@ public class UserManagementServlet extends BaseServlet {
     }
 
     private void handleCreateUser(Map<String, String> body, HttpServletResponse response) throws IOException {
-        String name = body.get("name") != null ? body.get("name").trim() : null;
-        String email = body.get("email") != null ? body.get("email").trim() : null;
+        String name = body.get("name") != null ? body.get("name").trim() : "";
+        String email = body.get("email") != null ? body.get("email").trim().toLowerCase(java.util.Locale.ROOT) : "";
         String password = body.get("password");
         String roleStr = body.get("role");
         String userId = body.get("userId") != null ? body.get("userId").trim() : null;
 
-        if (name == null || name.isEmpty() || email == null || !email.contains("@") || !email.contains(".")
-                || password == null || password.length() < 6) {
+        if (name.length() < 2 || name.length() > 100 || !email.matches("^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}$")) {
             sendJsonResponse(response, HttpServletResponse.SC_BAD_REQUEST,
-                    "{\"success\":false,\"error\":\"Valid name, email, and password (min 6 chars) are required.\"}");
+                    "{\"success\":false,\"error\":\"Valid name (2-100 chars) and email address are required.\"}");
+            return;
+        }
+        String strengthError = util.PasswordHasher.validatePasswordStrength(password);
+        if (strengthError != null) {
+            sendJsonResponse(response, HttpServletResponse.SC_BAD_REQUEST,
+                    String.format("{\"success\":false,\"error\":\"%s\"}", JsonHelper.escape(strengthError)));
             return;
         }
 
         if (userId == null || userId.isEmpty()) {
-            userId = email.split("@")[0].replaceAll("[^a-zA-Z0-9_-]", "").toLowerCase();
+            userId = email.split("@")[0].replaceAll("[^a-zA-Z0-9_-]", "").toLowerCase(java.util.Locale.ROOT);
         }
         if (!userId.matches("[a-zA-Z0-9_-]{3,40}")) {
             sendJsonResponse(response, HttpServletResponse.SC_BAD_REQUEST,
@@ -154,10 +159,13 @@ public class UserManagementServlet extends BaseServlet {
             return;
         }
         String newPassword = body.get("password");
-        if (newPassword != null && !newPassword.isEmpty() && newPassword.length() < 6) {
-            sendJsonResponse(response, HttpServletResponse.SC_BAD_REQUEST,
-                    "{\"success\":false,\"error\":\"Updated password must be at least 6 characters.\"}");
-            return;
+        if (newPassword != null && !newPassword.isEmpty()) {
+            String strengthError = util.PasswordHasher.validatePasswordStrength(newPassword);
+            if (strengthError != null) {
+                sendJsonResponse(response, HttpServletResponse.SC_BAD_REQUEST,
+                        String.format("{\"success\":false,\"error\":\"%s\"}", JsonHelper.escape(strengthError)));
+                return;
+            }
         }
 
         try {

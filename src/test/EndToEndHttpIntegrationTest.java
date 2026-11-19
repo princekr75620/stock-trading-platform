@@ -407,6 +407,30 @@ public class EndToEndHttpIntegrationTest {
             assertTrue(expSess.statusCode() == 401 && expPortfolio.statusCode() == 401,
                     "HTTP-39: Expired session returns 401 on /api/auth/session and /api/portfolio");
 
+            // 7. Verify ServletBridge sendError(405), duplicate register 409, UpdateStock 400, Watchlist 404
+            HttpResponse<String> method405 = send(regClient, base2 + "/api/trades/buy", "GET", null, null);
+            assertTrue(method405.statusCode() == 405,
+                    "HTTP-40: Unsupported GET /api/trades/buy returns HTTP 405 via ServletBridge sendError()");
+
+            HttpResponse<String> dupReg = send(anonClient, base2 + "/api/auth/register", "POST",
+                    String.format("{\"name\":\"Dup Email\",\"email\":\"%s@test.in\",\"password\":\"StrongDup@2026!\"}", regUid), null);
+            assertTrue(dupReg.statusCode() == 409,
+                    "HTTP-41: Duplicate email registration returns HTTP 409 Conflict");
+
+            HttpResponse<String> badWatch = send(regClient, base2 + "/api/watchlist", "POST",
+                    "{\"symbol\":\"NONEXISTENT99\",\"action\":\"add\"}", regCsrf);
+            assertTrue(badWatch.statusCode() == 404,
+                    "HTTP-42: Adding nonexistent ticker to watchlist returns HTTP 404 Not Found");
+
+            HttpClient admClient2 = newSessionClient();
+            HttpResponse<String> admLogin2 = send(admClient2, base2 + "/api/auth/login", "POST",
+                    "{\"usernameOrEmail\":\"admin\",\"password\":\"admin123\"}", null);
+            String admCsrf2 = extractJsonString(admLogin2.body(), "csrfToken");
+            HttpResponse<String> badStockPrice = send(admClient2, base2 + "/api/admin/stocks/update", "POST",
+                    "{\"symbol\":\"TCS\",\"price\":\"-50\"}", admCsrf2);
+            assertTrue(badStockPrice.statusCode() == 400,
+                    "HTTP-43: Admin updating stock with negative price returns HTTP 400 Bad Request");
+
         } catch (Exception e) {
             e.printStackTrace();
             assertTrue(false, "HTTP Integration suite unexpected error: " + e.getMessage());

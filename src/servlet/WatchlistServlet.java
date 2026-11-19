@@ -104,6 +104,11 @@ public class WatchlistServlet extends BaseServlet {
             boolean inList = watchlistDAO.isInWatchlist(targetUserId, sym);
             boolean updated;
             if ("add".equalsIgnoreCase(action) || (!inList && "toggle".equalsIgnoreCase(action))) {
+                if (marketUpdateService != null && marketUpdateService.getStock(sym) == null) {
+                    sendJsonResponse(response, HttpServletResponse.SC_NOT_FOUND,
+                            "{\"success\":false,\"error\":\"Stock not found: " + JsonHelper.escape(sym) + "\"}");
+                    return;
+                }
                 updated = watchlistDAO.addToWatchlist(targetUserId, sym);
             } else {
                 updated = watchlistDAO.removeFromWatchlist(targetUserId, sym);

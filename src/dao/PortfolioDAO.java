@@ -28,10 +28,11 @@ public class PortfolioDAO implements PortfolioDAOInterface {
                     String symbol = rs.getString("symbol");
                     int qty = rs.getInt("quantity");
                     BigDecimal avgDec = rs.getBigDecimal("average_price");
-                    BigDecimal safeAvg = (avgDec != null && avgDec.compareTo(BigDecimal.ZERO) > 0)
-                            ? MoneyUtil.round(avgDec)
-                            : new BigDecimal("0.01");
-                    portfolio.recordBuy(symbol, qty, safeAvg);
+                    if (symbol == null || symbol.trim().isEmpty() || qty <= 0
+                            || avgDec == null || avgDec.compareTo(BigDecimal.ZERO) <= 0) {
+                        throw new SQLException("Corrupted portfolio record detected for user '" + userId + "' (symbol=" + symbol + ").");
+                    }
+                    portfolio.recordBuy(symbol, qty, MoneyUtil.round(avgDec));
                 }
             }
         }
@@ -50,11 +51,12 @@ public class PortfolioDAO implements PortfolioDAOInterface {
                 String symbol = rs.getString("symbol");
                 int qty = rs.getInt("quantity");
                 BigDecimal avgDec = rs.getBigDecimal("average_price");
-                BigDecimal safeAvg = (avgDec != null && avgDec.compareTo(BigDecimal.ZERO) > 0)
-                        ? MoneyUtil.round(avgDec)
-                        : new BigDecimal("0.01");
+                if (userId == null || userId.trim().isEmpty() || symbol == null || symbol.trim().isEmpty()
+                        || qty <= 0 || avgDec == null || avgDec.compareTo(BigDecimal.ZERO) <= 0) {
+                    throw new SQLException("Corrupted portfolio record detected in batch load for user '" + userId + "'.");
+                }
                 Portfolio p = result.computeIfAbsent(userId, Portfolio::new);
-                p.recordBuy(symbol, qty, safeAvg);
+                p.recordBuy(symbol, qty, MoneyUtil.round(avgDec));
             }
         }
         return result;
@@ -112,7 +114,10 @@ public class PortfolioDAO implements PortfolioDAOInterface {
                     exists = true;
                     existingQty = rs.getInt("quantity");
                     BigDecimal avgDec = rs.getBigDecimal("average_price");
-                    existingAvgPrice = avgDec != null ? MoneyUtil.round(avgDec) : MoneyUtil.ZERO;
+                    if (existingQty <= 0 || avgDec == null || avgDec.compareTo(BigDecimal.ZERO) <= 0) {
+                        throw new SQLException("Corrupted existing portfolio row for user '" + userId + "' symbol '" + symbol + "'.");
+                    }
+                    existingAvgPrice = MoneyUtil.round(avgDec);
                 }
             }
         }

@@ -92,8 +92,8 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess }) => {
         <div className="max-w-7xl mx-auto flex items-center justify-between gap-6 text-slate-300">
           <div className="flex items-center space-x-6">
             <span className="flex items-center space-x-1.5 font-medium">
-              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-              <span className="text-white font-bold">NSE &amp; BSE LIVE</span>
+              <span className="w-2 h-2 rounded-full bg-amber-400"></span>
+              <span className="text-white font-bold">ILLUSTRATIVE INDICES (PAPER)</span>
             </span>
             <span className="space-x-1.5">
               <span className="text-slate-400">NIFTY 50:</span>
@@ -179,11 +179,11 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess }) => {
               </div>
             </div>
 
-            {/* Bottom Compliance Callout */}
+            {/* Bottom Simulation Notice */}
             <div className="mt-8 pt-4 border-t border-slate-800/80">
               <div className="flex items-center justify-between text-[11px] text-slate-400">
-                <span>SEBI Reg: <strong className="text-slate-300">INZ000205836</strong></span>
-                <span>CDSL / NSDL Depository</span>
+                <span>Mode: <strong className="text-slate-300">Paper Trading Simulation</strong></span>
+                <span>NSE / BSE Delayed &amp; Sim Quotes</span>
               </div>
             </div>
           </div>
@@ -409,7 +409,7 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess }) => {
                       required
                       value={regPassword}
                       onChange={(e) => setRegPassword(e.target.value)}
-                      placeholder="At least 6 characters"
+                      placeholder="Min 8 chars (A-Z, a-z, 0-9, symbol)"
                       className="w-full px-3.5 py-2 bg-slate-950 border border-slate-750 rounded-xl text-white text-sm placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-orange-500/50"
                     />
                   </div>

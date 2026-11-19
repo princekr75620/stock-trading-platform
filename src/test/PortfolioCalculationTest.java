@@ -32,6 +32,7 @@ public class PortfolioCalculationTest {
         testBigDecimalWeightedAverageAndUnrealizedPnL();
         testInvalidPriceAndQuantityRejected();
         testFractionalBigDecimalAvoidsBinaryFloatDrift();
+        testMissingCostBasisRejectedExplicitly();
 
         System.out.printf("PortfolioCalculationTest Results: %d/%d Passed.\n\n", testsPassed, testsRun);
         return testsPassed == testsRun;
@@ -138,5 +139,22 @@ public class PortfolioCalculationTest {
         assertTrue(totalInvest.compareTo(new java.math.BigDecimal("3005.00")) == 0
                         && avg.compareTo(new java.math.BigDecimal("100.17")) == 0,
                 "testFractionalBigDecimalAvoidsBinaryFloatDrift - Exact scale=2 HALF_UP portfolio decimal values");
+    }
+
+    public static void testMissingCostBasisRejectedExplicitly() {
+        Map<String, Integer> rawHoldings = new HashMap<>();
+        rawHoldings.put("TCS", 10);
+        Map<String, Double> corruptedAvg = new HashMap<>();
+        corruptedAvg.put("TCS", 0.0);
+
+        Portfolio corrupted = new Portfolio("corrupt_u", rawHoldings, corruptedAvg, 0.0);
+        boolean threwOnMissingCostBasis = false;
+        try {
+            corrupted.recordSell("TCS", 5);
+        } catch (IllegalStateException expected) {
+            threwOnMissingCostBasis = expected.getMessage().contains("cost basis");
+        }
+        assertTrue(threwOnMissingCostBasis && corrupted.getCostBasisMap().isEmpty(),
+                "testMissingCostBasisRejectedExplicitly - Corrupted/zero cost basis sanitized at load and rejected without silent 1.00 fallback");
     }
 }

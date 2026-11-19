@@ -31,11 +31,18 @@ public class Portfolio implements Serializable {
 
     public Portfolio(String traderId, Map<String, Integer> holdings, Map<String, Double> costBasis, double realizedProfitLoss) {
         this.traderId = traderId;
-        this.holdings = (holdings != null) ? new HashMap<>(holdings) : new HashMap<>();
+        this.holdings = new HashMap<>();
+        if (holdings != null) {
+            for (Map.Entry<String, Integer> e : holdings.entrySet()) {
+                if (e.getKey() != null && e.getValue() != null && e.getValue() > 0) {
+                    this.holdings.put(e.getKey().toUpperCase().trim(), e.getValue());
+                }
+            }
+        }
         this.costBasis = new HashMap<>();
         if (costBasis != null) {
             for (Map.Entry<String, Double> e : costBasis.entrySet()) {
-                if (e.getKey() != null && e.getValue() != null) {
+                if (e.getKey() != null && e.getValue() != null && e.getValue() > 0.0) {
                     this.costBasis.put(e.getKey().toUpperCase().trim(), MoneyUtil.of(e.getValue()));
                 }
             }
@@ -110,9 +117,12 @@ public class Portfolio implements Serializable {
     }
 
     public synchronized double recordSell(String symbol, int quantity) {
+        if (symbol == null || symbol.trim().isEmpty()) {
+            throw new IllegalArgumentException("Stock symbol is required for sell.");
+        }
         BigDecimal avg = getAverageBuyPriceDecimal(symbol);
         if (avg.compareTo(BigDecimal.ZERO) <= 0) {
-            avg = BigDecimal.ONE;
+            throw new IllegalStateException("Cannot execute sell without valid positive cost basis for holding: " + symbol);
         }
         return recordSell(symbol, quantity, avg);
     }

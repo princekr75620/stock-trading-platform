@@ -202,16 +202,44 @@ public class BoundedConnectionPool {
         }
     }
 
+    /**
+     * Handle interface implemented by pooled Connection proxies so callers (e.g. TradingService)
+     * can flag a connection as broken after an unrecoverable rollback/TX error so it is discarded
+     * instead of recycled back to the idle pool.
+     */
+    public interface PoolManagedConnection {
+        void markBroken();
+        boolean isBroken();
+    }
+
+    /**
+     * Marks a pooled Connection as broken so close() physically destroys it instead of returning it to idleQueue.
+     * No-op for null or non-pooled direct DriverManager connections.
+     */
+    public static void markBroken(Connection conn) {
+        if (conn instanceof PoolManagedConnection) {
+            ((PoolManagedConnection) conn).markBroken();
+        }
+    }
+
     private Connection wrapConnection(PooledEntry entry) {
         AtomicBoolean handleClosed = new AtomicBoolean(false);
+        AtomicBoolean handleBroken = new AtomicBoolean(false);
         return (Connection) Proxy.newProxyInstance(
-                Connection.class.getClassLoader(),
-                new Class<?>[]{Connection.class},
+                BoundedConnectionPool.class.getClassLoader(),
+                new Class<?>[]{Connection.class, PoolManagedConnection.class},
                 (proxy, method, args) -> {
                     String name = method.getName();
+                    if ("markBroken".equals(name)) {
+                        handleBroken.set(true);
+                        return null;
+                    }
+                    if ("isBroken".equals(name)) {
+                        return handleBroken.get();
+                    }
                     if ("close".equals(name)) {
                         if (handleClosed.compareAndSet(false, true)) {
-                            releaseConnection(entry);
+                            releaseConnection(entry, handleBroken.get());
                         }
                         return null;
                     }
@@ -230,8 +258,8 @@ public class BoundedConnectionPool {
         );
     }
 
-    private void releaseConnection(PooledEntry entry) {
-        boolean keepReusable = !closed && entry.physical != null;
+    private void releaseConnection(PooledEntry entry, boolean brokenHint) {
+        boolean keepReusable = !brokenHint && !closed && entry.physical != null;
         if (keepReusable) {
             long ageMs = System.currentTimeMillis() - entry.createdAtMs;
             if (ageMs >= maxLifetimeMs) {
@@ -242,6 +270,7 @@ public class BoundedConnectionPool {
                         keepReusable = false;
                     } else {
                         if (!entry.physical.getAutoCommit()) {
+                            // Never call setAutoCommit(true) if rollback fails and TX state is uncertain
                             entry.physical.rollback();
                             entry.physical.setAutoCommit(true);
                         }

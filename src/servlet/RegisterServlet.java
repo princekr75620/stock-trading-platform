@@ -43,29 +43,43 @@ public class RegisterServlet extends BaseServlet {
             return;
         }
 
-        String trimmedEmail = email.trim();
-        if (!trimmedEmail.matches("^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}$")) {
+        String trimmedName = name != null ? name.trim() : "";
+        if (trimmedName.length() < 2 || trimmedName.length() > 100) {
+            sendJsonResponse(response, HttpServletResponse.SC_BAD_REQUEST,
+                    "{\"success\":false,\"error\":\"Full name must be between 2 and 100 characters.\"}");
+            return;
+        }
+
+        String normalizedEmail = email.trim().toLowerCase(java.util.Locale.ROOT);
+        if (!normalizedEmail.matches("^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}$")) {
             sendJsonResponse(response, HttpServletResponse.SC_BAD_REQUEST,
                     "{\"success\":false,\"error\":\"Please provide a valid email address.\"}");
             return;
         }
 
-        if (password.length() < 6) {
+        String strengthError = util.PasswordHasher.validatePasswordStrength(password);
+        if (strengthError != null) {
             sendJsonResponse(response, HttpServletResponse.SC_BAD_REQUEST,
-                    "{\"success\":false,\"error\":\"Password must be at least 6 characters long.\"}");
+                    String.format("{\"success\":false,\"error\":\"%s\"}", JsonHelper.escape(strengthError)));
             return;
         }
 
-        if (userId == null || userId.trim().isEmpty()) {
-            userId = trimmedEmail.split("@")[0].replaceAll("[^a-zA-Z0-9_]", "").toLowerCase();
-            if (userId.isEmpty()) {
-                userId = "trader_" + (System.currentTimeMillis() % 100000);
+        String normalizedUid = (userId != null) ? userId.trim() : "";
+        if (normalizedUid.isEmpty()) {
+            normalizedUid = normalizedEmail.split("@")[0].replaceAll("[^a-zA-Z0-9_-]", "").toLowerCase(java.util.Locale.ROOT);
+            if (normalizedUid.length() < 3) {
+                normalizedUid = "trader_" + (System.currentTimeMillis() % 100000);
             }
+        }
+        if (!normalizedUid.matches("^[a-zA-Z0-9_-]{3,40}$")) {
+            sendJsonResponse(response, HttpServletResponse.SC_BAD_REQUEST,
+                    "{\"success\":false,\"error\":\"userId must be 3-40 alphanumeric, underscore, or hyphen characters.\"}");
+            return;
         }
 
         // Public registration always creates a TRADER account with default initial balance.
         double defaultInitialBalance = 50000.0;
-        User newUser = new Trader(userId.trim(), name.trim(), trimmedEmail, password, defaultInitialBalance);
+        User newUser = new Trader(normalizedUid, trimmedName, normalizedEmail, password, defaultInitialBalance);
 
         try {
             userService.createUser(newUser);
@@ -75,9 +89,16 @@ public class RegisterServlet extends BaseServlet {
                     JsonHelper.userToJson(newUser),
                     JsonHelper.escape(csrfToken));
             sendJsonResponse(response, HttpServletResponse.SC_CREATED, json);
-        } catch (Exception e) {
+        } catch (exception.DuplicateUserException dup) {
+            sendJsonResponse(response, HttpServletResponse.SC_CONFLICT,
+                    String.format("{\"success\":false,\"error\":\"%s\"}", JsonHelper.escape(dup.getMessage())));
+        } catch (exception.InvalidInputException inv) {
             sendJsonResponse(response, HttpServletResponse.SC_BAD_REQUEST,
-                    String.format("{\"success\":false,\"error\":\"%s\"}", JsonHelper.escape(e.getMessage())));
+                    String.format("{\"success\":false,\"error\":\"%s\"}", JsonHelper.escape(inv.getMessage())));
+        } catch (Exception e) {
+            System.err.println("[RegisterServlet] Unexpected error: " + e.getMessage());
+            sendJsonResponse(response, HttpServletResponse.SC_INTERNAL_SERVER_ERROR,
+                    "{\"success\":false,\"error\":\"Unable to complete registration right now.\"}");
         }
     }
 }

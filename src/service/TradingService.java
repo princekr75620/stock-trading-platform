@@ -3,6 +3,7 @@ package service;
 import dao.*;
 import exception.*;
 import model.*;
+import util.BoundedConnectionPool;
 import util.DBConnection;
 import util.MoneyUtil;
 
@@ -20,14 +21,21 @@ import java.util.Map;
  * - Row-level locking on MySQL (`FOR UPDATE`), `transaction_mode=IMMEDIATE` on SQLite, and atomic conditional SQL guards on balances & inventory
  * - Idempotency key deduplication via `trade_idempotency` table inside the ACID transaction
  * - Active market status validation on BOTH buy and sell orders
- * - Post-commit-only notification & cache side effects
+ * - Strict separation between ACID DB transaction lifecycle and post-commit-only notification/cache side effects
+ * - Discarding broken connections on rollback/autoCommit failures without calling setAutoCommit(true)
  */
 public class TradingService implements ITradingService, TradingServiceInterface {
+
+    @FunctionalInterface
+    public interface ConnectionProvider {
+        Connection getConnection() throws SQLException;
+    }
 
     private final IMarketUpdateService marketUpdateService;
     private final IPortfolioService portfolioService;
     private final INotificationService notificationService;
     private final IUserService userService;
+    private final ConnectionProvider connectionProvider;
 
     private final UserDAO userDAO;
     private final StockDAO stockDAO;
@@ -38,17 +46,38 @@ public class TradingService implements ITradingService, TradingServiceInterface 
                           IPortfolioService portfolioService,
                           INotificationService notificationService,
                           IUserService userService) {
+        this(marketUpdateService, portfolioService, notificationService, userService, DBConnection::getConnection, true);
+    }
+
+    public TradingService(IMarketUpdateService marketUpdateService,
+                          IPortfolioService portfolioService,
+                          INotificationService notificationService,
+                          IUserService userService,
+                          ConnectionProvider customConnectionProvider) {
+        this(marketUpdateService, portfolioService, notificationService, userService,
+                customConnectionProvider != null ? customConnectionProvider : DBConnection::getConnection, false);
+    }
+
+    private TradingService(IMarketUpdateService marketUpdateService,
+                           IPortfolioService portfolioService,
+                           INotificationService notificationService,
+                           IUserService userService,
+                           ConnectionProvider connectionProvider,
+                           boolean initDb) {
         this.marketUpdateService = marketUpdateService;
         this.portfolioService = portfolioService;
         this.notificationService = notificationService;
         this.userService = userService;
+        this.connectionProvider = connectionProvider;
 
         this.userDAO = new UserDAO();
         this.stockDAO = new StockDAO();
         this.portfolioDAO = new PortfolioDAO();
         this.transactionDAO = new TransactionDAO();
 
-        DBConnection.initializeDatabase();
+        if (initDb) {
+            DBConnection.initializeDatabase();
+        }
     }
 
     public TradingService(IMarketUpdateService marketUpdateService,
@@ -110,9 +139,18 @@ public class TradingService implements ITradingService, TradingServiceInterface 
         String uid = traderId.trim();
         String sym = symbol.toUpperCase().trim();
         Connection conn = null;
+        boolean committed = false;
+        boolean rollbackFailed = false;
+
+        Transaction tx = null;
+        String committedUserId = null;
+        BigDecimal committedPrice = null;
+        BigDecimal committedFee = null;
+        BigDecimal committedTotal = null;
+        BigDecimal remainingBalance = null;
 
         try {
-            conn = DBConnection.getConnection();
+            conn = connectionProvider.getConnection();
             if (DBConnection.isMySQL()) {
                 conn.setTransactionIsolation(Connection.TRANSACTION_REPEATABLE_READ);
             }
@@ -178,7 +216,7 @@ public class TradingService implements ITradingService, TradingServiceInterface 
             }
 
             // Step 6: Insert transaction audit record
-            Transaction tx = new Transaction(
+            tx = new Transaction(
                     user.getUserId(),
                     stock.getId(),
                     sym,
@@ -199,34 +237,23 @@ public class TradingService implements ITradingService, TradingServiceInterface 
                         "Duplicate BUY order blocked: this order request has already been processed.");
             }
 
-            // Step 8: Commit ACID transaction
+            // Step 8: Commit ACID transaction (point of durability)
             conn.commit();
-
-            // Post-commit side effects ONLY after durable DB commit
-            BigDecimal newBalance = currentBalance.subtract(totalAmount);
-            if (portfolioService != null) {
-                portfolioService.updateOnBuy(user.getUserId(), sym, quantity, currentPrice.doubleValue());
-            }
-            if (notificationService != null) {
-                notificationService.sendNotification(new Notification(
-                        "NOTIF-" + (System.currentTimeMillis() % 100000),
-                        user.getUserId(),
-                        "Order Executed: BUY " + sym,
-                        String.format("Purchased %d shares of %s at ₹%.2f (Fee: ₹%.2f). Total: ₹%.2f. Cash remaining: ₹%.2f.",
-                                quantity, sym, currentPrice.doubleValue(), feeAmount.doubleValue(),
-                                totalAmount.doubleValue(), newBalance.doubleValue()),
-                        Notification.NotificationType.TRADE_BUY
-                ));
-            }
-
-            return tx;
+            committed = true;
+            committedUserId = user.getUserId();
+            committedPrice = currentPrice;
+            committedFee = feeAmount;
+            committedTotal = totalAmount;
+            remainingBalance = currentBalance.subtract(totalAmount);
 
         } catch (Exception e) {
-            if (conn != null) {
+            if (conn != null && !committed) {
                 try {
                     conn.rollback();
                 } catch (SQLException rbEx) {
-                    System.err.println("[TradingService] Failed to rollback BUY transaction: " + rbEx.getMessage());
+                    rollbackFailed = true;
+                    BoundedConnectionPool.markBroken(conn);
+                    System.err.println("[TradingService] Failed to rollback BUY transaction; discarding connection: " + rbEx.getMessage());
                 }
             }
             if (trimmedKey != null && e instanceof SQLException && isUniqueConstraintViolation((SQLException) e)) {
@@ -242,12 +269,25 @@ public class TradingService implements ITradingService, TradingServiceInterface 
             throw new SQLException("Transaction execution failed: " + e.getMessage(), e);
         } finally {
             if (conn != null) {
+                if (!rollbackFailed) {
+                    try {
+                        if (!conn.getAutoCommit()) {
+                            conn.setAutoCommit(true);
+                        }
+                    } catch (SQLException acEx) {
+                        BoundedConnectionPool.markBroken(conn);
+                        System.err.println("[TradingService] Failed resetting autoCommit on BUY connection; discarding: " + acEx.getMessage());
+                    }
+                }
                 try {
-                    conn.setAutoCommit(true);
                     conn.close();
                 } catch (SQLException ignored) {}
             }
         }
+
+        // Post-commit side effects execute strictly outside DB TX lifecycle and cannot fail/rollback a committed trade
+        runPostCommitBuySideEffects(committedUserId, sym, quantity, committedPrice, committedFee, committedTotal, remainingBalance);
+        return tx;
     }
 
     @Override
@@ -299,9 +339,18 @@ public class TradingService implements ITradingService, TradingServiceInterface 
         String uid = traderId.trim();
         String sym = symbol.toUpperCase().trim();
         Connection conn = null;
+        boolean committed = false;
+        boolean rollbackFailed = false;
+
+        Transaction tx = null;
+        String committedUserId = null;
+        BigDecimal committedPrice = null;
+        BigDecimal committedFee = null;
+        BigDecimal committedNetProceeds = null;
+        BigDecimal updatedBalance = null;
 
         try {
-            conn = DBConnection.getConnection();
+            conn = connectionProvider.getConnection();
             if (DBConnection.isMySQL()) {
                 conn.setTransactionIsolation(Connection.TRANSACTION_REPEATABLE_READ);
             }
@@ -374,7 +423,7 @@ public class TradingService implements ITradingService, TradingServiceInterface 
             }
 
             // Step 7: Insert transaction audit record
-            Transaction tx = new Transaction(
+            tx = new Transaction(
                     user.getUserId(),
                     stock.getId(),
                     sym,
@@ -395,34 +444,23 @@ public class TradingService implements ITradingService, TradingServiceInterface 
                         "Duplicate SELL order blocked: this order request has already been processed.");
             }
 
-            // Step 9: Commit ACID transaction
+            // Step 9: Commit ACID transaction (point of durability)
             conn.commit();
-
-            // Post-commit side effects ONLY after durable commit
-            BigDecimal newBalance = currentBalance.add(netProceeds);
-            if (portfolioService != null) {
-                portfolioService.updateOnSell(user.getUserId(), sym, quantity, currentPrice.doubleValue());
-            }
-            if (notificationService != null) {
-                notificationService.sendNotification(new Notification(
-                        "NOTIF-" + (System.currentTimeMillis() % 100000),
-                        user.getUserId(),
-                        "Order Executed: SELL " + sym,
-                        String.format("Sold %d shares of %s at ₹%.2f (Fee: ₹%.2f). Net Proceeds: ₹%.2f. Balance: ₹%.2f.",
-                                quantity, sym, currentPrice.doubleValue(), feeAmount.doubleValue(),
-                                netProceeds.doubleValue(), newBalance.doubleValue()),
-                        Notification.NotificationType.TRADE_SELL
-                ));
-            }
-
-            return tx;
+            committed = true;
+            committedUserId = user.getUserId();
+            committedPrice = currentPrice;
+            committedFee = feeAmount;
+            committedNetProceeds = netProceeds;
+            updatedBalance = currentBalance.add(netProceeds);
 
         } catch (Exception e) {
-            if (conn != null) {
+            if (conn != null && !committed) {
                 try {
                     conn.rollback();
                 } catch (SQLException rbEx) {
-                    System.err.println("[TradingService] Failed to rollback SELL transaction: " + rbEx.getMessage());
+                    rollbackFailed = true;
+                    BoundedConnectionPool.markBroken(conn);
+                    System.err.println("[TradingService] Failed to rollback SELL transaction; discarding connection: " + rbEx.getMessage());
                 }
             }
             if (trimmedKey != null && e instanceof SQLException && isUniqueConstraintViolation((SQLException) e)) {
@@ -437,10 +475,75 @@ public class TradingService implements ITradingService, TradingServiceInterface 
             throw new SQLException("Sell order execution failed: " + e.getMessage(), e);
         } finally {
             if (conn != null) {
+                if (!rollbackFailed) {
+                    try {
+                        if (!conn.getAutoCommit()) {
+                            conn.setAutoCommit(true);
+                        }
+                    } catch (SQLException acEx) {
+                        BoundedConnectionPool.markBroken(conn);
+                        System.err.println("[TradingService] Failed resetting autoCommit on SELL connection; discarding: " + acEx.getMessage());
+                    }
+                }
                 try {
-                    conn.setAutoCommit(true);
                     conn.close();
                 } catch (SQLException ignored) {}
+            }
+        }
+
+        // Post-commit side effects execute strictly outside DB TX lifecycle and cannot fail/rollback a committed trade
+        runPostCommitSellSideEffects(committedUserId, sym, quantity, committedPrice, committedFee, committedNetProceeds, updatedBalance);
+        return tx;
+    }
+
+    private void runPostCommitBuySideEffects(String userId, String symbol, int quantity,
+                                             BigDecimal price, BigDecimal fee, BigDecimal total, BigDecimal newBalance) {
+        if (portfolioService != null) {
+            try {
+                portfolioService.updateOnBuy(userId, symbol, quantity, price.doubleValue());
+            } catch (Exception ex) {
+                System.err.println("[TradingService] Post-commit BUY portfolio cache update warning for " + symbol + ": " + ex.getMessage());
+            }
+        }
+        if (notificationService != null) {
+            try {
+                notificationService.sendNotification(new Notification(
+                        "NOTIF-" + (System.currentTimeMillis() % 100000),
+                        userId,
+                        "Order Executed: BUY " + symbol,
+                        String.format("Purchased %d shares of %s at ₹%.2f (Fee: ₹%.2f). Total: ₹%.2f. Cash remaining: ₹%.2f.",
+                                quantity, symbol, price.doubleValue(), fee.doubleValue(),
+                                total.doubleValue(), newBalance.doubleValue()),
+                        Notification.NotificationType.TRADE_BUY
+                ));
+            } catch (Exception ex) {
+                System.err.println("[TradingService] Post-commit BUY notification warning for " + userId + ": " + ex.getMessage());
+            }
+        }
+    }
+
+    private void runPostCommitSellSideEffects(String userId, String symbol, int quantity,
+                                              BigDecimal price, BigDecimal fee, BigDecimal netProceeds, BigDecimal newBalance) {
+        if (portfolioService != null) {
+            try {
+                portfolioService.updateOnSell(userId, symbol, quantity, price.doubleValue());
+            } catch (Exception ex) {
+                System.err.println("[TradingService] Post-commit SELL portfolio cache update warning for " + symbol + ": " + ex.getMessage());
+            }
+        }
+        if (notificationService != null) {
+            try {
+                notificationService.sendNotification(new Notification(
+                        "NOTIF-" + (System.currentTimeMillis() % 100000),
+                        userId,
+                        "Order Executed: SELL " + symbol,
+                        String.format("Sold %d shares of %s at ₹%.2f (Fee: ₹%.2f). Net Proceeds: ₹%.2f. Balance: ₹%.2f.",
+                                quantity, symbol, price.doubleValue(), fee.doubleValue(),
+                                netProceeds.doubleValue(), newBalance.doubleValue()),
+                        Notification.NotificationType.TRADE_SELL
+                ));
+            } catch (Exception ex) {
+                System.err.println("[TradingService] Post-commit SELL notification warning for " + userId + ": " + ex.getMessage());
             }
         }
     }

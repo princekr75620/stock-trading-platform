@@ -67,8 +67,8 @@ export const Navbar: React.FC<NavbarProps> = ({
         <div className="max-w-7xl mx-auto flex items-center justify-between gap-4 overflow-x-auto whitespace-nowrap scrollbar-none">
           <div className="flex items-center space-x-6">
             <span className="flex items-center space-x-1.5 font-bold text-white">
-              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-              <span>NSE / BSE TICKER</span>
+              <span className="w-2 h-2 rounded-full bg-amber-400"></span>
+              <span>REFERENCE INDICES (ILLUSTRATIVE)</span>
             </span>
             <span className="space-x-1.5">
               <span className="text-slate-400">NIFTY 50:</span>
@@ -93,9 +93,9 @@ export const Navbar: React.FC<NavbarProps> = ({
           </div>
 
           <div className="flex items-center space-x-3 text-slate-400 text-[11px] shrink-0">
-            <span className="hidden lg:inline">Brokerage: 0.15% &bull; SEBI Regulated</span>
-            <span className="px-2 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 font-semibold">
-              IST: 09:15 - 15:30
+            <span className="hidden lg:inline">Paper Brokerage: 0.15% &bull; Academic Simulation</span>
+            <span className="px-2 py-0.5 rounded bg-slate-800 border border-slate-700 text-slate-300 font-semibold">
+              NSE Session: 09:15 - 15:30 IST
             </span>
           </div>
         </div>
@@ -129,7 +129,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                       marketStatus === 'OPEN' ? 'bg-emerald-500' : 'bg-amber-500'
                     }`}
                   />
-                  {marketStatus === 'OPEN' ? 'Market Live' : 'Market Closed'}
+                  {marketStatus === 'OPEN' ? 'Market Open (Paper)' : 'Market Closed'}
                 </span>
               </div>
               <p className="text-[11px] text-slate-500 font-medium">
@@ -164,11 +164,11 @@ export const Navbar: React.FC<NavbarProps> = ({
             <button
               onClick={onTriggerTick}
               disabled={isTicking}
-              title="Refresh Real-Time Market Prices from Live Financial Exchange Feed"
+              title="Refresh quotes from external market data with local simulation fallback"
               className="px-2.5 py-1.5 text-xs border border-blue-300 rounded-lg bg-blue-50 hover:bg-blue-100 text-blue-700 transition font-bold disabled:opacity-50 cursor-pointer shadow-xs flex items-center space-x-1"
             >
               <span className={`inline-block w-2 h-2 rounded-full bg-blue-600 ${isTicking ? 'animate-ping' : ''}`}></span>
-              <span>{isTicking ? 'Refreshing Live Feed...' : '⚡ Live Price Refresh'}</span>
+              <span>{isTicking ? 'Refreshing Quotes...' : 'Refresh Market Quotes'}</span>
             </button>
 
             {currentUser.role === 'TRADER' && cashBalance !== undefined && (

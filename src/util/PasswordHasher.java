@@ -101,4 +101,49 @@ public class PasswordHasher {
     public static boolean needsRehash(String storedPassword) {
         return isLegacyMarkedPassword(storedPassword);
     }
+
+    public static final int MIN_PASSWORD_LENGTH = 8;
+    public static final int MAX_PASSWORD_LENGTH = 128;
+
+    /**
+     * Enforces minimum password complexity policy:
+     * - 8 to 128 characters, no leading/trailing whitespace
+     * - At least 1 uppercase letter, 1 lowercase letter, 1 digit, and 1 special character
+     * - Rejects common weak credentials
+     *
+     * @return null if strong enough, or a clear validation error message otherwise.
+     */
+    public static String validatePasswordStrength(String password) {
+        if (password == null || password.isEmpty()) {
+            return "Password is required.";
+        }
+        if (!password.equals(password.trim())) {
+            return "Password must not start or end with spaces.";
+        }
+        if (password.length() < MIN_PASSWORD_LENGTH) {
+            return "Password must be at least " + MIN_PASSWORD_LENGTH + " characters long.";
+        }
+        if (password.length() > MAX_PASSWORD_LENGTH) {
+            return "Password must not exceed " + MAX_PASSWORD_LENGTH + " characters.";
+        }
+        boolean hasUpper = false;
+        boolean hasLower = false;
+        boolean hasDigit = false;
+        boolean hasSpecial = false;
+        for (int i = 0; i < password.length(); i++) {
+            char c = password.charAt(i);
+            if (Character.isUpperCase(c)) hasUpper = true;
+            else if (Character.isLowerCase(c)) hasLower = true;
+            else if (Character.isDigit(c)) hasDigit = true;
+            else if (!Character.isWhitespace(c)) hasSpecial = true;
+        }
+        if (!hasUpper || !hasLower || !hasDigit || !hasSpecial) {
+            return "Password must include at least one uppercase letter, lowercase letter, digit, and special character.";
+        }
+        String lower = password.toLowerCase(java.util.Locale.ROOT);
+        if (lower.contains("password") || lower.contains("admin123") || lower.contains("qwerty") || lower.contains("12345678")) {
+            return "Password is too predictable; please choose a stronger credential.";
+        }
+        return null;
+    }
 }

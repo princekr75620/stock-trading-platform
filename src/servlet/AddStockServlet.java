@@ -45,16 +45,21 @@ public class AddStockServlet extends BaseServlet {
             double price = Double.parseDouble(priceStr);
             int quantity = Integer.parseInt(qtyStr);
 
-            if (price <= 0 || quantity < 0) {
+            if (!Double.isFinite(price) || price <= 0 || quantity < 0) {
                 sendJsonResponse(response, HttpServletResponse.SC_BAD_REQUEST,
-                        "{\"success\":false,\"error\":\"Price must be positive and quantity must be non-negative.\"}");
+                        "{\"success\":false,\"error\":\"Price must be finite positive and quantity must be non-negative.\"}");
                 return;
             }
 
             String sym = symbol.toUpperCase().trim();
-            if (marketUpdateService.getStock(sym) != null) {
+            if (!sym.matches("^[A-Z0-9._-]{1,20}$")) {
                 sendJsonResponse(response, HttpServletResponse.SC_BAD_REQUEST,
-                        "{\"success\":false,\"error\":\"Stock with symbol " + sym + " already exists.\"}");
+                        "{\"success\":false,\"error\":\"Ticker symbol must be 1-20 valid characters.\"}");
+                return;
+            }
+            if (marketUpdateService.getStock(sym) != null) {
+                sendJsonResponse(response, HttpServletResponse.SC_CONFLICT,
+                        "{\"success\":false,\"error\":\"Stock with symbol " + JsonHelper.escape(sym) + " already exists.\"}");
                 return;
             }
 

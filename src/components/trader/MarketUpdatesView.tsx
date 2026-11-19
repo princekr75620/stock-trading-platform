@@ -31,7 +31,7 @@ export const MarketUpdatesView: React.FC<MarketUpdatesViewProps> = ({
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Market Updates</h1>
           <p className="text-sm text-gray-600">
-            Real-time corporate announcements, volatility alerts, and price change feeds.
+            Market announcements, volatility alerts, and simulated price ticks.
           </p>
         </div>
 
@@ -88,7 +88,7 @@ export const MarketUpdatesView: React.FC<MarketUpdatesViewProps> = ({
                         <div className="text-xs text-gray-500 font-normal">{update.stockName}</div>
                       </td>
                       <td className="py-3 px-4 font-semibold text-gray-900">
-                        ${(update.currentPrice ?? 0).toFixed(2)}
+                        ₹{(update.currentPrice ?? 0).toFixed(2)}
                       </td>
                       <td className="py-3 px-4">
                         <span
@@ -96,7 +96,7 @@ export const MarketUpdatesView: React.FC<MarketUpdatesViewProps> = ({
                             isUp ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'
                           }`}
                         >
-                          {isUp ? '+' : ''}${(update.priceDelta ?? 0).toFixed(2)} ({isUp ? '+' : ''}
+                          {isUp ? '+' : ''}₹{(update.priceDelta ?? 0).toFixed(2)} ({isUp ? '+' : ''}
                           {(update.percentChange ?? 0).toFixed(2)}%)
                         </span>
                       </td>

@@ -55,6 +55,9 @@ public class TradingServiceTest {
         testConcurrentBuyAndSellThreadSafety();
         testConcurrentLimitedBalanceBuyRaceCondition();
         testRealDatabaseFailureRollbackOnBuyAndSell();
+        testPostCommitNotificationFailureDoesNotFailOrRollbackTrade();
+        testRollbackFailureSkipsSetAutoCommitAndDiscardsBrokenPoolConnection();
+        testConcurrentSameIdempotencyKeyRaceCondition();
         testBigDecimalDaoAndTransactionValidation();
 
         System.out.printf("TradingServiceTest Results: %d/%d Passed.\n\n", testsPassed, testsRun);
@@ -503,6 +506,179 @@ public class TradingServiceTest {
                     "testBigDecimalDaoAndTransactionValidation - DAO guards reject zero price and zero quantity cleanly");
         } catch (Exception e) {
             assertTrue(false, "testBigDecimalDaoAndTransactionValidation - Unexpected exception: " + e.getMessage());
+        }
+    }
+
+    public static void testPostCommitNotificationFailureDoesNotFailOrRollbackTrade() {
+        String uid = "ts_postc_" + (System.currentTimeMillis() % 100000);
+        String sym = "PST" + (System.currentTimeMillis() % 10000);
+        try {
+            UserDAO userDAO = new UserDAO();
+            StockDAO stockDAO = new StockDAO();
+            PortfolioDAO portfolioDAO = new PortfolioDAO();
+            NotificationService failingNotif = new NotificationService() {
+                @Override
+                public void sendNotification(Notification notification) {
+                    throw new RuntimeException("Simulated notification queue outage");
+                }
+            };
+            TradingService service = new TradingService(
+                    new MarketUpdateService(failingNotif),
+                    new PortfolioService(),
+                    failingNotif,
+                    new UserService()
+            );
+
+            userDAO.insert(new Trader(uid, "PostCommit Trader", uid + "@test.in", PasswordHasher.hashPassword("Secret123!"), 10000.00));
+            stockDAO.insert(new Stock(sym, "PostCommit Equity", "NSE", 100.00, 100));
+
+            Transaction buyTx = service.executeBuyTransaction(uid, sym, 5, "postc-buy-" + uid);
+            Transaction sellTx = service.executeSellTransaction(uid, sym, 2, "postc-sell-" + uid);
+
+            User afterUser = userDAO.findById(uid);
+            int heldQty = portfolioDAO.getHoldings(uid).getOrDefault(sym, 0);
+            Stock afterStock = stockDAO.findBySymbol(sym);
+
+            assertTrue(buyTx != null && sellTx != null
+                            && heldQty == 3
+                            && afterStock != null && afterStock.getAvailableQuantity() == 97
+                            && afterUser != null && afterUser.getBalance() < 10000.00,
+                    "testPostCommitNotificationFailureDoesNotFailOrRollbackTrade - Committed BUY/SELL remain committed & succeed even when post-commit NotificationService throws");
+        } catch (Exception e) {
+            e.printStackTrace();
+            assertTrue(false, "testPostCommitNotificationFailureDoesNotFailOrRollbackTrade - Should not throw after commit: " + e.getMessage());
+        } finally {
+            cleanupTestEntities(uid, sym);
+        }
+    }
+
+    public static void testRollbackFailureSkipsSetAutoCommitAndDiscardsBrokenPoolConnection() {
+        java.util.concurrent.atomic.AtomicBoolean setAutoCommitTrueCalledAfterFault = new java.util.concurrent.atomic.AtomicBoolean(false);
+        java.util.concurrent.atomic.AtomicBoolean physicalClosedOnBroken = new java.util.concurrent.atomic.AtomicBoolean(false);
+        java.util.concurrent.atomic.AtomicBoolean autoCommitMode = new java.util.concurrent.atomic.AtomicBoolean(true);
+
+        util.BoundedConnectionPool isolatedPool = new util.BoundedConnectionPool(() -> (Connection) java.lang.reflect.Proxy.newProxyInstance(
+                Connection.class.getClassLoader(),
+                new Class<?>[]{Connection.class},
+                (proxy, method, args) -> {
+                    switch (method.getName()) {
+                        case "setAutoCommit":
+                            boolean val = (Boolean) args[0];
+                            if (val) setAutoCommitTrueCalledAfterFault.set(true);
+                            autoCommitMode.set(val);
+                            return null;
+                        case "getAutoCommit":
+                            return autoCommitMode.get();
+                        case "rollback":
+                            throw new SQLException("Simulated rollback failure on broken socket");
+                        case "commit":
+                            throw new SQLException("Commit unavailable");
+                        case "isClosed":
+                            return physicalClosedOnBroken.get();
+                        case "close":
+                            physicalClosedOnBroken.set(true);
+                            return null;
+                        case "prepareStatement":
+                            return java.lang.reflect.Proxy.newProxyInstance(
+                                    PreparedStatement.class.getClassLoader(),
+                                    new Class<?>[]{PreparedStatement.class},
+                                    (psProxy, psMethod, psArgs) -> {
+                                        if ("executeQuery".equals(psMethod.getName()) || "executeUpdate".equals(psMethod.getName())) {
+                                            throw new SQLException("Simulated DB mid-flight failure");
+                                        }
+                                        return null;
+                                    }
+                            );
+                        default:
+                            return null;
+                    }
+                }
+        ), 2, 0, 200, 60_000);
+
+        try {
+            NotificationService notif = new NotificationService();
+            TradingService service = new TradingService(
+                    new MarketUpdateService(notif),
+                    new PortfolioService(),
+                    notif,
+                    new UserService(),
+                    isolatedPool::getConnection
+            );
+
+            boolean caughtFault = false;
+            try {
+                service.executeBuyTransaction("anyUser", "TCS", 1, "rb-fail-key");
+            } catch (SQLException expected) {
+                caughtFault = true;
+            } catch (Exception unexpected) {
+                throw new AssertionError("Expected SQLException on simulated DB failure, got: " + unexpected, unexpected);
+            }
+            util.BoundedConnectionPool.PoolStats stats = isolatedPool.getStats();
+            assertTrue(caughtFault
+                            && !setAutoCommitTrueCalledAfterFault.get()
+                            && physicalClosedOnBroken.get()
+                            && stats.totalConnections == 0
+                            && stats.idleConnections == 0,
+                    "testRollbackFailureSkipsSetAutoCommitAndDiscardsBrokenPoolConnection - Failed rollback skips setAutoCommit(true), marks broken, and discards connection from pool");
+        } finally {
+            isolatedPool.shutdown();
+        }
+    }
+
+    public static void testConcurrentSameIdempotencyKeyRaceCondition() {
+        String uid = "ts_idemrace_" + (System.currentTimeMillis() % 100000);
+        String sym = "IDR" + (System.currentTimeMillis() % 10000);
+        ExecutorService pool = Executors.newFixedThreadPool(5);
+        try {
+            UserDAO userDAO = new UserDAO();
+            StockDAO stockDAO = new StockDAO();
+            PortfolioDAO portfolioDAO = new PortfolioDAO();
+            NotificationService notif = new NotificationService();
+            TradingService service = new TradingService(new MarketUpdateService(notif), new PortfolioService(), notif, new UserService());
+
+            userDAO.insert(new Trader(uid, "Idem Race Trader", uid + "@test.in", PasswordHasher.hashPassword("Secret123!"), 20000.00));
+            stockDAO.insert(new Stock(sym, "Idem Race Equity", "NSE", 100.00, 500));
+
+            String sharedKey = "shared-idem-key-" + System.nanoTime();
+            CountDownLatch gate = new CountDownLatch(1);
+            List<Future<String>> futures = new ArrayList<>();
+            for (int i = 0; i < 5; i++) {
+                futures.add(pool.submit(() -> {
+                    gate.await(5, TimeUnit.SECONDS);
+                    try {
+                        service.executeBuyTransaction(uid, sym, 10, sharedKey);
+                        return "COMMITTED";
+                    } catch (DuplicateOrderException | SQLException e) {
+                        return "DEDUP";
+                    }
+                }));
+            }
+            gate.countDown();
+
+            int committed = 0;
+            int deduped = 0;
+            for (Future<String> f : futures) {
+                String res = f.get(15, TimeUnit.SECONDS);
+                if ("COMMITTED".equals(res)) committed++;
+                else if ("DEDUP".equals(res)) deduped++;
+            }
+
+            // Expected balance after strictly 1 BUY of 10 * 100.00 + 1.50 fee = 20000 - 1001.50 = 18998.50
+            User after = userDAO.findById(uid);
+            int held = portfolioDAO.getHoldings(uid).getOrDefault(sym, 0);
+            Stock afterStock = stockDAO.findBySymbol(sym);
+
+            assertTrue(committed == 1 && deduped == 4
+                            && held == 10
+                            && afterStock != null && afterStock.getAvailableQuantity() == 490
+                            && after != null && Math.abs(after.getBalance() - 18998.50) < 0.001,
+                    "testConcurrentSameIdempotencyKeyRaceCondition - 5 concurrent requests with identical Idempotency-Key executed strictly once");
+        } catch (Exception e) {
+            e.printStackTrace();
+            assertTrue(false, "testConcurrentSameIdempotencyKeyRaceCondition - Unexpected exception: " + e.getMessage());
+        } finally {
+            pool.shutdownNow();
+            cleanupTestEntities(uid, sym);
         }
     }
 }

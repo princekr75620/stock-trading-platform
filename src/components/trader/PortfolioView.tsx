@@ -81,7 +81,7 @@ export const PortfolioView: React.FC<PortfolioViewProps> = ({
             Portfolio Holdings ({holdings.length})
           </h2>
           <span className="text-xs text-gray-500">
-            Real-time market valuation
+            Simulated / delayed market valuation
           </span>
         </div>
 

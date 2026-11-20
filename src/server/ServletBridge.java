@@ -232,13 +232,29 @@ public class ServletBridge {
         }
     }
 
+    private boolean isTrustedExchangeProxy(HttpExchange exchange) {
+        String remoteAddr = extractExchangeRemoteAddr(exchange);
+        String gatewaySecret = getFirstHeader(exchange, "X-Gateway-Proxy-Secret");
+        return AuthenticationFilter.isTrustedProxyPeer(remoteAddr, gatewaySecret);
+    }
+
+    private String extractExchangeRemoteAddr(HttpExchange exchange) {
+        try {
+            if (exchange != null && exchange.getRemoteAddress() != null && exchange.getRemoteAddress().getAddress() != null) {
+                return exchange.getRemoteAddress().getAddress().getHostAddress();
+            }
+        } catch (Exception ignored) {}
+        return "127.0.0.1";
+    }
+
     private String buildCookieAttributes(HttpExchange exchange) {
-        String sameSite = System.getenv("COOKIE_SAMESITE");
-        if (sameSite == null || (!"Strict".equalsIgnoreCase(sameSite) && !"Lax".equalsIgnoreCase(sameSite) && !"None".equalsIgnoreCase(sameSite))) {
+        String sameSite = util.EnvConfig.get("COOKIE_SAMESITE", "Lax");
+        if (!"Strict".equalsIgnoreCase(sameSite) && !"Lax".equalsIgnoreCase(sameSite) && !"None".equalsIgnoreCase(sameSite)) {
             sameSite = "Lax";
         }
-        boolean secure = "true".equalsIgnoreCase(System.getenv("COOKIE_SECURE"))
-                || "https".equalsIgnoreCase(getFirstHeader(exchange, "X-Forwarded-Proto"))
+        String forwardedProto = isTrustedExchangeProxy(exchange) ? getFirstHeader(exchange, "X-Forwarded-Proto") : null;
+        boolean secure = "true".equalsIgnoreCase(util.EnvConfig.get("COOKIE_SECURE"))
+                || "https".equalsIgnoreCase(forwardedProto)
                 || "None".equalsIgnoreCase(sameSite);
         return "; Path=/; HttpOnly; SameSite=" + sameSite + (secure ? "; Secure" : "");
     }
@@ -278,6 +294,8 @@ public class ServletBridge {
         String path = exchange.getRequestURI().getPath();
         String method = exchange.getRequestMethod();
         String queryString = exchange.getRequestURI().getQuery();
+        String remoteAddr = extractExchangeRemoteAddr(exchange);
+        boolean trustedProxy = isTrustedExchangeProxy(exchange);
 
         Map<String, String[]> paramMap = new HashMap<>();
         if (queryString != null) {
@@ -300,17 +318,34 @@ public class ServletBridge {
                         case "getMethod": return method;
                         case "getRequestURI": return path;
                         case "getQueryString": return queryString;
+                        case "getRemoteAddr": return remoteAddr;
+                        case "getRemoteHost": return remoteAddr;
                         case "getProtocol": {
                             String protocol = exchange.getProtocol();
                             return (protocol != null && !protocol.isEmpty()) ? protocol : "HTTP/1.1";
                         }
                         case "getScheme": {
-                            String proto = getFirstHeader(exchange, "X-Forwarded-Proto");
-                            return (proto != null && !proto.isEmpty()) ? proto : "http";
+                            if (trustedProxy) {
+                                String proto = getFirstHeader(exchange, "X-Forwarded-Proto");
+                                if ("https".equalsIgnoreCase(proto)) return "https";
+                                if ("http".equalsIgnoreCase(proto)) return "http";
+                            }
+                            return "http";
                         }
                         case "getServerName": {
-                            String host = getFirstHeader(exchange, "X-Forwarded-Host");
-                            if (host == null || host.isEmpty()) host = getFirstHeader(exchange, "Host");
+                            String host = null;
+                            if (trustedProxy) {
+                                String xfh = getFirstHeader(exchange, "X-Forwarded-Host");
+                                if (xfh != null && AuthenticationFilter.isAllowedHost(xfh)) {
+                                    host = xfh.trim();
+                                }
+                            }
+                            if (host == null || host.isEmpty()) {
+                                String h = getFirstHeader(exchange, "Host");
+                                if (h != null && AuthenticationFilter.isAllowedHost(h)) {
+                                    host = h.trim();
+                                }
+                            }
                             if (host != null && host.contains(":")) return host.substring(0, host.indexOf(':'));
                             return (host != null && !host.isEmpty()) ? host : "127.0.0.1";
                         }

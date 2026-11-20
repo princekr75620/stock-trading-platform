@@ -133,7 +133,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                 </span>
               </div>
               <p className="text-[11px] text-slate-500 font-medium">
-                Enterprise Securities &amp; Indian Equities Trading System
+                Simulated Securities &amp; Indian Equities Paper Trading System
               </p>
             </div>
           </div>

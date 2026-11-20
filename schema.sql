@@ -131,6 +131,19 @@ CREATE TABLE IF NOT EXISTS watchlist (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- ------------------------------------------------------------------------------
+-- 7. LOGIN RATE LIMITS TABLE
+-- Persistent shared brute-force & progressive temporary throttling state.
+-- ------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS login_rate_limits (
+    rate_key VARCHAR(200) PRIMARY KEY,
+    scope VARCHAR(20) NOT NULL,
+    attempt_count INT NOT NULL DEFAULT 0,
+    last_attempt_at BIGINT NOT NULL,
+    throttle_until BIGINT NOT NULL DEFAULT 0,
+    INDEX idx_rate_throttle_until (throttle_until)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ------------------------------------------------------------------------------
 -- NON-SENSITIVE REFERENCE EQUITY CATALOG (Safe for Production)
 -- Provision production admin user explicitly via ADMIN_BOOTSTRAP_USER/PASSWORD.
 -- ------------------------------------------------------------------------------

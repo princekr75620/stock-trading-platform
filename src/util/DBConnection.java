@@ -480,6 +480,16 @@ public class DBConnection {
                     "  FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE" +
                     ");"
                 );
+
+                stmt.execute(
+                    "CREATE TABLE IF NOT EXISTS login_rate_limits (" +
+                    "  rate_key VARCHAR(200) PRIMARY KEY," +
+                    "  scope VARCHAR(20) NOT NULL," +
+                    "  attempt_count INTEGER NOT NULL DEFAULT 0," +
+                    "  last_attempt_at BIGINT NOT NULL," +
+                    "  throttle_until BIGINT NOT NULL DEFAULT 0" +
+                    ");"
+                );
             } else {
                 stmt.execute(
                     "CREATE TABLE IF NOT EXISTS schema_migrations (" +
@@ -581,6 +591,17 @@ public class DBConnection {
                     "  FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE" +
                     ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;"
                 );
+
+                stmt.execute(
+                    "CREATE TABLE IF NOT EXISTS login_rate_limits (" +
+                    "  rate_key VARCHAR(200) PRIMARY KEY," +
+                    "  scope VARCHAR(20) NOT NULL," +
+                    "  attempt_count INT NOT NULL DEFAULT 0," +
+                    "  last_attempt_at BIGINT NOT NULL," +
+                    "  throttle_until BIGINT NOT NULL DEFAULT 0," +
+                    "  INDEX idx_rate_throttle_until (throttle_until)" +
+                    ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;"
+                );
             }
         }
     }
@@ -644,6 +665,26 @@ public class DBConnection {
                 migrateSqliteLegacyDoubleMonetaryColumns(conn);
             }
             recordMigration(conn, mysqlMode, "004_monetary_decimal_precision", "Convert legacy DOUBLE/REAL monetary columns safely to DECIMAL(15, 2)");
+
+            // Migration 005: Persistent authentication rate-limiting storage
+            stmt.execute(mysqlMode
+                    ? "CREATE TABLE IF NOT EXISTS login_rate_limits (" +
+                      "  rate_key VARCHAR(200) PRIMARY KEY," +
+                      "  scope VARCHAR(20) NOT NULL," +
+                      "  attempt_count INT NOT NULL DEFAULT 0," +
+                      "  last_attempt_at BIGINT NOT NULL," +
+                      "  throttle_until BIGINT NOT NULL DEFAULT 0," +
+                      "  INDEX idx_rate_throttle_until (throttle_until)" +
+                      ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
+                    : "CREATE TABLE IF NOT EXISTS login_rate_limits (" +
+                      "  rate_key VARCHAR(200) PRIMARY KEY," +
+                      "  scope VARCHAR(20) NOT NULL," +
+                      "  attempt_count INTEGER NOT NULL DEFAULT 0," +
+                      "  last_attempt_at BIGINT NOT NULL," +
+                      "  throttle_until BIGINT NOT NULL DEFAULT 0" +
+                      ")");
+            ensureIndex(conn, stmt, mysqlMode, "login_rate_limits", "idx_rate_throttle_until", false, "throttle_until");
+            recordMigration(conn, mysqlMode, "005_login_rate_limits", "Add persistent authentication rate-limit table across restarts/instances");
         }
     }
 

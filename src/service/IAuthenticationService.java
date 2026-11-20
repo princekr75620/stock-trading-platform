@@ -8,6 +8,7 @@ import model.User;
  */
 public interface IAuthenticationService {
     User login(String usernameOrEmail, String password) throws InvalidLoginException;
+    User login(String usernameOrEmail, String password, String clientIp) throws InvalidLoginException;
     void logout();
     User getCurrentUser();
     boolean isAuthenticated();

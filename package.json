@@ -1,14 +1,14 @@
 {
-  "name": "react-example",
+  "name": "indian-stock-paper-trading-platform",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
   "type": "module",
   "scripts": {
     "dev": "tsx server.ts",
     "build": "bash compile.sh && vite build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs",
     "test": "java -cp \"lib/*:out\" test.AllTestsRunner",
     "compile:java": "bash compile.sh",
-    "build:war": "mvn clean package -DskipTests=true",
+    "build:war": "bash compile.sh && npm test && mvn clean package",
     "start": "node dist/server.cjs",
     "preview": "vite preview",
     "clean": "rm -rf dist server.js out target",

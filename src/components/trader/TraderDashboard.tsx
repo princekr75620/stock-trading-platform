@@ -4,6 +4,9 @@ import { Stock, Portfolio, Trade, MarketUpdate, User } from '../../types';
 interface TraderDashboardProps {
   currentUser: User;
   portfolio: Portfolio | null;
+  portfolioLoading?: boolean;
+  portfolioError?: string | null;
+  onRetryPortfolio?: () => void;
   stocks: Stock[];
   trades: Trade[];
   marketUpdates: MarketUpdate[];
@@ -14,19 +17,28 @@ interface TraderDashboardProps {
 export const TraderDashboard: React.FC<TraderDashboardProps> = ({
   currentUser,
   portfolio,
+  portfolioLoading = false,
+  portfolioError = null,
+  onRetryPortfolio,
   stocks,
   trades,
   marketUpdates,
   onNavigate,
   onOpenTrade,
 }) => {
-  const currentVal = portfolio?.currentPortfolioValue ?? 0;
-  const investmentVal = portfolio?.totalInvestmentValue ?? 0;
-  const pnl = portfolio?.unrealizedProfitLoss ?? 0;
-  const pnlPercent = portfolio?.unrealizedProfitLossPercent ?? 0;
-  const holdingsCount = portfolio?.holdingsCount ?? portfolio?.holdings?.length ?? 0;
+  const hasPortfolio = portfolio !== null;
+  const currentVal = hasPortfolio ? portfolio.currentPortfolioValue : null;
+  const investmentVal = hasPortfolio ? portfolio.totalInvestmentValue : null;
+  const pnl = hasPortfolio ? portfolio.unrealizedProfitLoss : null;
+  const pnlPercent = hasPortfolio ? portfolio.unrealizedProfitLossPercent : null;
+  const holdingsCount = hasPortfolio
+    ? (portfolio.holdingsCount ?? portfolio.holdings?.length ?? 0)
+    : null;
+  const resolvedCashBalance = typeof portfolio?.cashBalance === 'number'
+    ? portfolio.cashBalance
+    : (typeof currentUser.cashBalance === 'number' ? currentUser.cashBalance : null);
 
-  const isProfit = pnl >= 0;
+  const isProfit = (pnl ?? 0) >= 0;
 
   return (
     <div className="space-y-6">
@@ -36,7 +48,7 @@ export const TraderDashboard: React.FC<TraderDashboardProps> = ({
           <h1 className="text-2xl font-black text-slate-900 tracking-tight flex items-center space-x-2">
             <span>Welcome, {currentUser.name || 'Trader'}</span>
             <span className="text-xs px-2.5 py-0.5 rounded-full bg-orange-100 text-orange-800 font-bold border border-orange-200">
-              NSE / BSE Terminal
+              NSE / BSE Paper Terminal
             </span>
           </h1>
           <p className="text-sm text-slate-500 mt-1">
@@ -59,15 +71,35 @@ export const TraderDashboard: React.FC<TraderDashboardProps> = ({
         </div>
       </div>
 
+      {/* Explicit Portfolio Unavailable / Retry Banner */}
+      {!hasPortfolio && portfolioError && (
+        <div className="bg-red-50 border border-red-200 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div>
+            <h3 className="font-bold text-red-900 text-sm">Portfolio &amp; Balance Data Unavailable</h3>
+            <p className="text-xs text-red-700 mt-0.5">{portfolioError}</p>
+          </div>
+          {onRetryPortfolio && (
+            <button
+              onClick={onRetryPortfolio}
+              className="px-3.5 py-1.5 bg-red-600 hover:bg-red-700 text-white text-xs font-bold rounded-lg transition shrink-0 cursor-pointer"
+            >
+              Retry Sync
+            </button>
+          )}
+        </div>
+      )}
+
       {/* New Trader Welcome / Prompt Banner */}
-      {holdingsCount === 0 && (
+      {hasPortfolio && holdingsCount === 0 && (
         <div className="bg-gradient-to-r from-orange-50 via-amber-50 to-emerald-50 border border-orange-200 rounded-xl p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xs">
           <div>
             <h3 className="font-bold text-slate-900 text-sm flex items-center space-x-1.5">
               <span>🇮🇳 Welcome to Bharat Stocks! Ready to make your first trade?</span>
             </h3>
             <p className="text-xs text-slate-600 mt-0.5">
-              Your ₹{(portfolio?.cashBalance ?? currentUser.cashBalance ?? 50000).toLocaleString('en-IN')} INR paper margin is ready. Pick top equities like Reliance, TCS, INFY or Tata Motors in the market watchlist!
+              {resolvedCashBalance !== null
+                ? `Your ₹${resolvedCashBalance.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} INR paper margin is ready. Pick top equities like Reliance, TCS, INFY or Tata Motors in the market watchlist!`
+                : 'Paper balance is loading from the server. Pick top equities like Reliance, TCS, INFY or Tata Motors in the market watchlist!'}
             </p>
           </div>
           <button
@@ -87,10 +119,14 @@ export const TraderDashboard: React.FC<TraderDashboardProps> = ({
             Portfolio Value
           </span>
           <div className="text-2xl font-bold text-gray-900 mt-1">
-            ₹{currentVal.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            {currentVal !== null
+              ? `₹${currentVal.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+              : (portfolioLoading ? 'Loading...' : 'Unavailable')}
           </div>
           <div className="text-xs text-gray-500 mt-1">
-            Cash: ₹{(portfolio?.cashBalance ?? currentUser.cashBalance ?? 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            {resolvedCashBalance !== null
+              ? `Cash: ₹${resolvedCashBalance.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+              : (portfolioLoading ? 'Cash: Loading...' : 'Cash balance unavailable')}
           </div>
         </div>
 
@@ -100,7 +136,9 @@ export const TraderDashboard: React.FC<TraderDashboardProps> = ({
             Total Investment
           </span>
           <div className="text-2xl font-bold text-gray-900 mt-1">
-            ₹{investmentVal.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            {investmentVal !== null
+              ? `₹${investmentVal.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+              : (portfolioLoading ? 'Loading...' : 'Unavailable')}
           </div>
           <div className="text-xs text-gray-500 mt-1">
             Capital allocated in equities
@@ -112,12 +150,25 @@ export const TraderDashboard: React.FC<TraderDashboardProps> = ({
           <span className="text-xs font-medium text-gray-500 uppercase tracking-wider">
             Profit/Loss
           </span>
-          <div className={`text-2xl font-bold mt-1 ${isProfit ? 'text-green-600' : 'text-red-600'}`}>
-            {isProfit ? '+' : ''}₹{pnl.toFixed(2)}
-          </div>
-          <div className={`text-xs mt-1 font-medium ${isProfit ? 'text-green-600' : 'text-red-600'}`}>
-            {isProfit ? '+' : ''}{pnlPercent.toFixed(2)}% overall return
-          </div>
+          {pnl !== null && pnlPercent !== null ? (
+            <>
+              <div className={`text-2xl font-bold mt-1 ${isProfit ? 'text-green-600' : 'text-red-600'}`}>
+                {isProfit ? '+' : ''}₹{pnl.toFixed(2)}
+              </div>
+              <div className={`text-xs mt-1 font-medium ${isProfit ? 'text-green-600' : 'text-red-600'}`}>
+                {isProfit ? '+' : ''}{pnlPercent.toFixed(2)}% overall return
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="text-2xl font-bold mt-1 text-gray-500">
+                {portfolioLoading ? 'Loading...' : 'Unavailable'}
+              </div>
+              <div className="text-xs mt-1 text-gray-400">
+                {portfolioLoading ? 'Calculating return...' : 'P&L unavailable'}
+              </div>
+            </>
+          )}
         </div>
 
         {/* Total Holdings */}
@@ -126,7 +177,7 @@ export const TraderDashboard: React.FC<TraderDashboardProps> = ({
             Total Holdings
           </span>
           <div className="text-2xl font-bold text-gray-900 mt-1">
-            {holdingsCount}
+            {holdingsCount !== null ? holdingsCount : (portfolioLoading ? '...' : '—')}
           </div>
           <div className="text-xs text-gray-500 mt-1">
             Active stock positions

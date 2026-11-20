@@ -1,5 +1,6 @@
 package test;
 
+import dao.LoginRateLimitDAO;
 import dao.StockDAO;
 import dao.UserDAO;
 import model.Stock;
@@ -301,11 +302,26 @@ public class EndToEndHttpIntegrationTest {
                     "HTTP-29: POST /api/trades/sell executes partial sell and updates portfolio in DB");
             double balanceAfterSell = userDAO.findById(regUid).getBalance();
 
-            // Check Secure cookie attribute when behind HTTPS reverse proxy (X-Forwarded-Proto: https)
+            // Untrusted X-Forwarded-Proto: https MUST NOT mark cookie Secure by default (TRUST_PROXY=false)
+            HttpClient untrustedProtoClient = newSessionClient();
+            HttpResponse<String> untrustedProtoLogin = send(untrustedProtoClient, base1 + "/api/auth/login", "POST",
+                    "{\"usernameOrEmail\":\"admin\",\"password\":\"admin123\"}", null,
+                    "X-Forwarded-Proto", "https");
+            String untrustedCookie = untrustedProtoLogin.headers().firstValue("Set-Cookie").orElse("");
+            assertTrue(untrustedProtoLogin.statusCode() == 200
+                            && untrustedCookie.contains("JSESSIONID=")
+                            && !untrustedCookie.contains("; Secure"),
+                    "HTTP-30: Untrusted X-Forwarded-Proto: https is ignored when TRUST_PROXY=false");
+
+            // Check Secure cookie attribute when behind an explicitly configured HTTPS reverse proxy
+            System.setProperty("TRUST_PROXY", "true");
+            System.setProperty("TRUSTED_PROXIES", "127.0.0.1");
             HttpClient httpsHeaderCheckClient = newSessionClient();
             HttpResponse<String> httpsAdmLogin = send(httpsHeaderCheckClient, base1 + "/api/auth/login", "POST",
                     "{\"usernameOrEmail\":\"admin\",\"password\":\"admin123\"}", null,
                     "X-Forwarded-Proto", "https");
+            System.clearProperty("TRUST_PROXY");
+            System.clearProperty("TRUSTED_PROXIES");
             String httpsAdmCookie = httpsAdmLogin.headers().firstValue("Set-Cookie").orElse("");
             assertTrue(httpsAdmLogin.statusCode() == 200
                             && httpsAdmCookie.contains("JSESSIONID=")
@@ -313,7 +329,7 @@ public class EndToEndHttpIntegrationTest {
                             && httpsAdmCookie.contains("SameSite=Lax")
                             && httpsAdmCookie.contains("Path=/")
                             && httpsAdmCookie.contains("; Secure"),
-                    "HTTP-30: Admin login sets HttpOnly, SameSite=Lax, Path=/, and Secure (under HTTPS proxy)");
+                    "HTTP-30a: Trusted HTTPS proxy peer sets HttpOnly, SameSite=Lax, Path=/, and Secure");
 
             // Admin login over plain HTTP test listener so Java CookieManager attaches JSESSIONID on follow-up requests
             HttpResponse<String> admLogin = send(adminClient, base1 + "/api/auth/login", "POST",
@@ -431,14 +447,72 @@ public class EndToEndHttpIntegrationTest {
             assertTrue(badStockPrice.statusCode() == 400,
                     "HTTP-43: Admin updating stock with negative price returns HTTP 400 Bad Request");
 
+            // 8. Spoofed X-Forwarded-Host / Origin / Forwarded header trust checks over live HTTP
+            HttpResponse<String> spoofXfhOrigin = send(regClient, base2 + "/api/trades/buy", "POST",
+                    "{\"symbol\":\"TCS\",\"quantity\":\"1\"}", regCsrf,
+                    "X-Forwarded-Host", "evil.com",
+                    "Origin", "http://evil.com");
+            assertTrue(spoofXfhOrigin.statusCode() == 403,
+                    "HTTP-44: Spoofed X-Forwarded-Host: evil.com + Origin: http://evil.com rejected with 403");
+
+            HttpResponse<String> spoofXfhHealth = send(anonClient, base2 + "/api/health", "GET", null, null,
+                    "X-Forwarded-Host", "evil.com");
+            assertTrue(spoofXfhHealth.statusCode() == 403,
+                    "HTTP-45: Spoofed X-Forwarded-Host: evil.com on /api/health rejected with 403");
+
+            // 9. Login anti-enumeration & DB-backed progressive rate limiting over live HTTP
+            LoginRateLimitDAO rateDao = new LoginRateLimitDAO();
+            rateDao.reset("ip:127.0.0.1");
+            rateDao.reset("acct:" + regUid.toLowerCase());
+            rateDao.reset("acct:e2e_unknown_" + ts);
+
+            HttpResponse<String> badPwResp = send(anonClient, base2 + "/api/auth/login", "POST",
+                    String.format("{\"usernameOrEmail\":\"%s\",\"password\":\"WrongPassword!\"}", regUid), null);
+            rateDao.reset("ip:127.0.0.1");
+            HttpResponse<String> unknownUserResp = send(anonClient, base2 + "/api/auth/login", "POST",
+                    String.format("{\"usernameOrEmail\":\"e2e_unknown_%s\",\"password\":\"WrongPassword!\"}", ts), null);
+            assertTrue(badPwResp.statusCode() == 401
+                            && unknownUserResp.statusCode() == 401
+                            && badPwResp.body().equals(unknownUserResp.body()),
+                    "HTTP-46: Live POST /api/auth/login emits identical 401 generic JSON for bad password and nonexistent account");
+
+            rateDao.reset("acct:" + regUid.toLowerCase());
+            rateDao.reset("ip:127.0.0.1");
+            for (int i = 0; i < 5; i++) {
+                send(anonClient, base2 + "/api/auth/login", "POST",
+                        String.format("{\"usernameOrEmail\":\"%s\",\"password\":\"WrongAttempt%d!\"}", regUid, i), null);
+            }
+            HttpResponse<String> throttledResp = send(anonClient, base2 + "/api/auth/login", "POST",
+                    String.format("{\"usernameOrEmail\":\"%s\",\"password\":\"E2ESecret123!\"}", regUid), null);
+            assertTrue(throttledResp.statusCode() == 429
+                            && throttledResp.headers().firstValue("Retry-After").isPresent()
+                            && throttledResp.body().contains("Too many authentication requests"),
+                    "HTTP-47: Repeated failed logins trigger HTTP 429 with Retry-After and non-leaky message");
+
         } catch (Exception e) {
             e.printStackTrace();
             assertTrue(false, "HTTP Integration suite unexpected error: " + e.getMessage());
         } finally {
             System.clearProperty("session.timeout.seconds");
             System.clearProperty("max.request.body.bytes");
+            System.clearProperty("TRUST_PROXY");
+            System.clearProperty("TRUSTED_PROXIES");
             if (server1 != null) server1.stop();
             if (server2 != null) server2.stop();
+            LoginRateLimitDAO cleanupRate = new LoginRateLimitDAO();
+            for (String key : new String[]{
+                    "ip:127.0.0.1",
+                    "acct:" + regUid.toLowerCase(),
+                    "acct:" + plainUid.toLowerCase(),
+                    "acct:" + legacyUid.toLowerCase(),
+                    "acct:e2e_unknown_" + ts,
+                    "acct:admin",
+                    "acct:trader1"
+            }) {
+                try {
+                    cleanupRate.reset(key);
+                } catch (SQLException ignored) {}
+            }
             deleteUserCascade(regUid);
             deleteUserCascade(plainUid);
             deleteUserCascade(legacyUid);

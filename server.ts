@@ -1,5 +1,6 @@
 import 'dotenv/config';
-import express from 'express';
+import express, { Request, Response, NextFunction } from 'express';
+import crypto from 'crypto';
 import path from 'path';
 import { createServer as createViteServer } from 'vite';
 import { spawn, execSync, ChildProcess } from 'child_process';
@@ -14,9 +15,147 @@ const JAVA_HOST = process.env.JAVA_HOST || '127.0.0.1';
 const JAVA_PORT = Number(process.env.JAVA_PORT || 8765);
 const HEALTH_POLL_INTERVAL_MS = 250;
 const HEALTH_TIMEOUT_MS = Number(process.env.JAVA_STARTUP_TIMEOUT_MS || 20000);
+const GATEWAY_PROXY_SECRET = process.env.GATEWAY_PROXY_SECRET || crypto.randomBytes(32).toString('hex');
 
 let javaProcess: ChildProcess | null = null;
 let shuttingDown = false;
+
+function isProductionEnv(): boolean {
+  const appEnv = (process.env.APP_ENV || process.env.NODE_ENV || 'development').trim().toLowerCase();
+  return appEnv === 'production';
+}
+
+function addOriginEntries(target: Set<string>, raw?: string): void {
+  if (!raw) return;
+  for (const item of raw.split(',')) {
+    const trimmed = item.trim();
+    if (!trimmed) continue;
+    try {
+      const u = new URL(trimmed);
+      if (u.protocol === 'http:' || u.protocol === 'https:') {
+        target.add(u.origin.toLowerCase());
+      }
+    } catch {
+      // ignore malformed env origin entry
+    }
+  }
+}
+
+function getAllowedOrigins(): Set<string> {
+  const origins = new Set<string>([
+    'http://localhost:3000',
+    'http://127.0.0.1:3000',
+  ]);
+  addOriginEntries(origins, process.env.ALLOWED_ORIGINS);
+  addOriginEntries(origins, process.env.APP_URL);
+  if (!isProductionEnv() && Number.isInteger(PORT) && PORT > 0) {
+    origins.add(`http://localhost:${PORT}`);
+    origins.add(`http://127.0.0.1:${PORT}`);
+  }
+  return origins;
+}
+
+function getAllowedHosts(): Set<string> {
+  const hosts = new Set<string>();
+  const rawHosts = process.env.ALLOWED_HOSTS || '';
+  for (const item of rawHosts.split(',')) {
+    const trimmed = item.trim().toLowerCase();
+    if (trimmed) hosts.add(trimmed);
+  }
+  for (const origin of getAllowedOrigins()) {
+    try {
+      const u = new URL(origin);
+      hosts.add(u.hostname.toLowerCase());
+      hosts.add(u.host.toLowerCase());
+    } catch {
+      // ignore
+    }
+  }
+  if (!isProductionEnv()) {
+    hosts.add('localhost');
+    hosts.add('127.0.0.1');
+    hosts.add('::1');
+  }
+  return hosts;
+}
+
+function isAllowedHostHeader(rawHost: string | undefined): boolean {
+  if (!rawHost) return false;
+  const trimmed = rawHost.trim();
+  if (!trimmed || trimmed.length > 255) return false;
+  if (/[\s,@/\\?#\r\n]/.test(trimmed)) return false;
+
+  const lower = trimmed.toLowerCase();
+  let hostname = lower;
+  let port = -1;
+
+  if (lower.startsWith('[')) {
+    const close = lower.indexOf(']');
+    if (close < 2) return false;
+    hostname = lower.slice(1, close);
+    if (close + 1 < lower.length) {
+      if (lower[close + 1] !== ':') return false;
+      const p = Number(lower.slice(close + 2));
+      if (!Number.isInteger(p) || p < 1 || p > 65535) return false;
+      port = p;
+    }
+  } else {
+    const colonIdx = lower.indexOf(':');
+    if (colonIdx >= 0) {
+      if (lower.indexOf(':', colonIdx + 1) >= 0) return false;
+      hostname = lower.slice(0, colonIdx);
+      const p = Number(lower.slice(colonIdx + 1));
+      if (!Number.isInteger(p) || p < 1 || p > 65535) return false;
+      port = p;
+    }
+  }
+
+  if (!hostname) return false;
+  const hostPort = port > 0 ? `${hostname}:${port}` : hostname;
+  const allowedHosts = getAllowedHosts();
+  return allowedHosts.has(hostPort) || allowedHosts.has(hostname);
+}
+
+function isAllowedOriginHeader(rawOrigin: string, req: Request): boolean {
+  try {
+    const u = new URL(rawOrigin);
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return false;
+    if (u.username || u.password) return false;
+    const normalizedOrigin = u.origin.toLowerCase();
+    if (getAllowedOrigins().has(normalizedOrigin)) return true;
+
+    if (!isProductionEnv()) {
+      const h = u.hostname.toLowerCase();
+      if (h === 'localhost' || h === '127.0.0.1' || h === '::1') {
+        const reqHost = typeof req.headers.host === 'string' ? req.headers.host.trim().toLowerCase() : '';
+        return isAllowedHostHeader(reqHost) && u.host.toLowerCase() === reqHost;
+      }
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+function normalizeIp(raw: string | undefined): string {
+  if (!raw) return '127.0.0.1';
+  let s = raw.trim();
+  if (s.startsWith('::ffff:')) s = s.slice(7);
+  if (s === '::1' || s === '0:0:0:0:0:0:0:1') return '127.0.0.1';
+  return s || '127.0.0.1';
+}
+
+function isTrustedProxyMode(): { enabled: boolean; ips: string[] } {
+  const ips = (process.env.TRUSTED_PROXY_IPS || process.env.TRUSTED_PROXIES || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (ips.length > 0) {
+    return { enabled: true, ips };
+  }
+  const flag = (process.env.TRUST_PROXY || 'false').trim().toLowerCase();
+  return { enabled: flag === 'true', ips: [] };
+}
 
 function validateEnvironmentConfig(): void {
   if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535) {
@@ -126,7 +265,10 @@ async function startAndAwaitJavaBackend(): Promise<void> {
     console.log(`[Server Gateway] Launching authoritative Java HTTP Server on ${JAVA_HOST}:${JAVA_PORT}...`);
     const child = spawn(javaBin, ['-cp', 'lib/*:out', 'server.TradingPlatformHttpServer', String(JAVA_PORT)], {
       stdio: 'inherit',
-      env: process.env,
+      env: {
+        ...process.env,
+        GATEWAY_PROXY_SECRET,
+      },
     });
     javaProcess = child;
 
@@ -211,11 +353,73 @@ async function startServer(): Promise<void> {
 
   const app = express();
   app.disable('x-powered-by');
-  app.use((_req, res, next) => {
+  const proxyConfig = isTrustedProxyMode();
+  if (proxyConfig.ips.length > 0) {
+    app.set('trust proxy', proxyConfig.ips);
+  } else if (proxyConfig.enabled) {
+    app.set('trust proxy', 1);
+  } else {
+    app.set('trust proxy', false);
+  }
+
+  app.use((req: Request, res: Response, next: NextFunction) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('X-Frame-Options', 'SAMEORIGIN');
     res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
     res.setHeader('Permissions-Policy', 'geolocation=(), microphone=(), camera=()');
+
+    const hostHeader = typeof req.headers.host === 'string' ? req.headers.host : undefined;
+    if (hostHeader && !isAllowedHostHeader(hostHeader)) {
+      return res.status(403).json({
+        success: false,
+        error: 'Security validation failed: Untrusted Host header.',
+      });
+    }
+
+    const xForwardedHost = req.headers['x-forwarded-host'];
+    if (xForwardedHost !== undefined) {
+      const rawXfh = Array.isArray(xForwardedHost) ? xForwardedHost.join(',') : String(xForwardedHost);
+      if (!isAllowedHostHeader(rawXfh)) {
+        return res.status(403).json({
+          success: false,
+          error: 'Security validation failed: Untrusted forwarded host header.',
+        });
+      }
+    }
+
+    const forwarded = req.headers.forwarded;
+    if (forwarded !== undefined) {
+      const rawFwd = Array.isArray(forwarded) ? forwarded.join(';') : String(forwarded);
+      const match = /(?:^|[;,\s])host=("[^"]+"|[^;,\s]+)/i.exec(rawFwd);
+      if (match && match[1]) {
+        const candidate = match[1].replace(/^"|"$/g, '').trim();
+        if (!isAllowedHostHeader(candidate)) {
+          return res.status(403).json({
+            success: false,
+            error: 'Security validation failed: Untrusted Forwarded header host.',
+          });
+        }
+      }
+    }
+
+    if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method.toUpperCase()) && req.path.startsWith('/api')) {
+      const origin = typeof req.headers.origin === 'string' ? req.headers.origin.trim() : '';
+      if (origin && !isAllowedOriginHeader(origin, req)) {
+        return res.status(403).json({
+          success: false,
+          error: 'Security validation failed: Untrusted request Origin.',
+        });
+      }
+      if (!origin && typeof req.headers.referer === 'string' && req.headers.referer.trim()) {
+        if (!isAllowedOriginHeader(req.headers.referer.trim(), req)) {
+          return res.status(403).json({
+            success: false,
+            error: 'Security validation failed: Untrusted request Referer.',
+          });
+        }
+      }
+    }
+
     next();
   });
   app.use(express.json({ limit: '1mb' }));
@@ -275,7 +479,7 @@ async function startServer(): Promise<void> {
 
     try {
       const targetUrl = `http://${JAVA_HOST}:${JAVA_PORT}${req.originalUrl}`;
-      const hopByHopHeaders = new Set([
+      const hopByHopAndProxyHeaders = new Set([
         'connection',
         'keep-alive',
         'proxy-authenticate',
@@ -286,21 +490,31 @@ async function startServer(): Promise<void> {
         'upgrade',
         'host',
         'content-length',
+        'forwarded',
+        'x-forwarded-host',
+        'x-forwarded-proto',
+        'x-forwarded-for',
+        'x-forwarded-port',
+        'x-real-ip',
+        'x-gateway-proxy-secret',
       ]);
 
       const forwardHeaders: Record<string, string> = {};
       for (const [key, val] of Object.entries(req.headers)) {
         const lowerKey = key.toLowerCase();
-        if (val && !hopByHopHeaders.has(lowerKey)) {
+        if (val && !hopByHopAndProxyHeaders.has(lowerKey)) {
           forwardHeaders[lowerKey] = Array.isArray(val) ? val.join('; ') : String(val);
         }
       }
-      if (!forwardHeaders['x-forwarded-proto']) {
-        forwardHeaders['x-forwarded-proto'] = req.protocol || 'http';
+
+      const clientIp = normalizeIp(proxyConfig.enabled ? req.ip : req.socket.remoteAddress);
+      forwardHeaders['x-real-ip'] = clientIp;
+      forwardHeaders['x-forwarded-for'] = clientIp;
+      forwardHeaders['x-forwarded-proto'] = (proxyConfig.enabled && req.protocol === 'https') ? 'https' : 'http';
+      if (typeof req.headers.host === 'string' && isAllowedHostHeader(req.headers.host)) {
+        forwardHeaders['x-forwarded-host'] = req.headers.host.trim();
       }
-      if (!forwardHeaders['x-forwarded-host'] && req.headers.host) {
-        forwardHeaders['x-forwarded-host'] = String(req.headers.host);
-      }
+      forwardHeaders['x-gateway-proxy-secret'] = GATEWAY_PROXY_SECRET;
 
       const fetchOptions: RequestInit = {
         method: req.method,

@@ -10,15 +10,18 @@ interface DatabaseStatusModalProps {
 export const DatabaseStatusModal: React.FC<DatabaseStatusModalProps> = ({ isOpen, onClose }) => {
   const [health, setHealth] = useState<DatabaseHealth | null>(null);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'status' | 'schema' | 'architecture'>('status');
 
   const fetchHealth = async () => {
     setLoading(true);
+    setError(null);
     try {
       const data = await api.getDbHealth();
       setHealth(data);
-    } catch (e) {
+    } catch (e: any) {
       console.error('Failed to fetch DB health:', e);
+      setError(e?.message || 'Unable to retrieve live database health status.');
     } finally {
       setLoading(false);
     }
@@ -92,11 +95,19 @@ export const DatabaseStatusModal: React.FC<DatabaseStatusModalProps> = ({ isOpen
         <div className="p-6 overflow-y-auto space-y-5 text-sm">
           {activeTab === 'status' && (
             <div className="space-y-4">
+              {error && (
+                <div className="p-3 rounded-xl border border-red-200 bg-red-50 text-xs text-red-700 font-medium">
+                  {error}
+                </div>
+              )}
+
               <div className="p-4 rounded-xl border border-emerald-200 bg-emerald-50/60 flex items-center justify-between">
                 <div className="flex items-center space-x-3">
-                  <span className="w-3.5 h-3.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                  <span className={`w-3.5 h-3.5 rounded-full ${health?.connected ? 'bg-emerald-500 animate-pulse' : 'bg-amber-500'}`}></span>
                   <div>
-                    <h4 className="font-bold text-emerald-950 text-sm">Relational JDBC Database Online</h4>
+                    <h4 className="font-bold text-emerald-950 text-sm">
+                      {loading ? 'Checking JDBC Connectivity...' : (health?.connected ? 'Relational JDBC Database Online' : 'Database Status Unavailable')}
+                    </h4>
                     <p className="text-xs text-emerald-800">
                       ACID transactional persistence active with Connection, PreparedStatement, and ResultSet.
                     </p>
@@ -115,27 +126,27 @@ export const DatabaseStatusModal: React.FC<DatabaseStatusModalProps> = ({ isOpen
                 <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-200">
                   <span className="text-xs text-slate-500 block font-medium">Database Engine</span>
                   <span className="text-sm font-bold text-slate-900">
-                    {health?.databaseProduct || 'SQLite / MySQL'}
+                    {health?.databaseProduct || (loading ? 'Loading...' : 'Unavailable')}
                   </span>
                   <span className="text-[11px] text-slate-400 block mt-0.5">
-                    Version: {health?.databaseVersion || '3.45.1.0'}
+                    Version: {health?.databaseVersion || (loading ? 'Loading...' : '—')}
                   </span>
                 </div>
 
                 <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-200">
                   <span className="text-xs text-slate-500 block font-medium">JDBC Driver</span>
                   <span className="text-sm font-bold text-slate-900">
-                    {health?.driverName || 'org.sqlite.JDBC'}
+                    {health?.driverName || (loading ? 'Loading...' : 'Unavailable')}
                   </span>
                   <span className="text-[11px] text-slate-400 block mt-0.5">
-                    Driver Version: {health?.driverVersion || '3.45.1.0'}
+                    Driver Version: {health?.driverVersion || (loading ? 'Loading...' : '—')}
                   </span>
                 </div>
 
                 <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-200">
                   <span className="text-xs text-slate-500 block font-medium">JDBC URL (Active)</span>
                   <span className="text-xs font-mono font-semibold text-slate-800 break-all">
-                    {health?.jdbcUrl || 'jdbc:sqlite:data/stock_trading.db'}
+                    {health?.jdbcUrl || (loading ? 'Loading...' : 'Unavailable')}
                   </span>
                 </div>
 
@@ -156,31 +167,31 @@ export const DatabaseStatusModal: React.FC<DatabaseStatusModalProps> = ({ isOpen
                 <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 text-center">
                   <div className="p-2.5 bg-orange-50/60 border border-orange-200 rounded-lg">
                     <span className="text-lg font-black text-orange-700 block">
-                      {health?.tableCounts?.users ?? 3}
+                      {health?.tableCounts?.users ?? (loading ? '...' : '—')}
                     </span>
                     <span className="text-[11px] font-semibold text-slate-600">users</span>
                   </div>
                   <div className="p-2.5 bg-blue-50/60 border border-blue-200 rounded-lg">
                     <span className="text-lg font-black text-blue-700 block">
-                      {health?.tableCounts?.stocks ?? 19}
+                      {health?.tableCounts?.stocks ?? (loading ? '...' : '—')}
                     </span>
                     <span className="text-[11px] font-semibold text-slate-600">stocks</span>
                   </div>
                   <div className="p-2.5 bg-purple-50/60 border border-purple-200 rounded-lg">
                     <span className="text-lg font-black text-purple-700 block">
-                      {health?.tableCounts?.portfolio ?? 3}
+                      {health?.tableCounts?.portfolio ?? (loading ? '...' : '—')}
                     </span>
                     <span className="text-[11px] font-semibold text-slate-600">portfolio</span>
                   </div>
                   <div className="p-2.5 bg-emerald-50/60 border border-emerald-200 rounded-lg">
                     <span className="text-lg font-black text-emerald-700 block">
-                      {health?.tableCounts?.transactions ?? 3}
+                      {health?.tableCounts?.transactions ?? (loading ? '...' : '—')}
                     </span>
                     <span className="text-[11px] font-semibold text-slate-600">transactions</span>
                   </div>
                   <div className="p-2.5 bg-amber-50/60 border border-amber-200 rounded-lg">
                     <span className="text-lg font-black text-amber-700 block">
-                      {health?.tableCounts?.watchlist ?? 5}
+                      {health?.tableCounts?.watchlist ?? (loading ? '...' : '—')}
                     </span>
                     <span className="text-[11px] font-semibold text-slate-600">watchlist</span>
                   </div>

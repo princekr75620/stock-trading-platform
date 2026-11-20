@@ -12,7 +12,7 @@ export const NewUserWelcomeView: React.FC<NewUserWelcomeViewProps> = ({
   onStartTrading,
   onViewPortfolio,
 }) => {
-  const balance = user.cashBalance ?? 50000.0;
+  const balance = typeof user.cashBalance === 'number' ? user.cashBalance : null;
 
   return (
     <div className="max-w-4xl mx-auto space-y-6 animate-in fade-in zoom-in-95 duration-200">
@@ -45,7 +45,7 @@ export const NewUserWelcomeView: React.FC<NewUserWelcomeViewProps> = ({
                 Email: <strong className="text-white">{user.email}</strong>
               </span>
               <span className="px-2.5 py-1 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 font-bold">
-                Status: ACTIVE (KYC Verified)
+                Status: ACTIVE (Paper Account)
               </span>
             </div>
           </div>
@@ -56,10 +56,12 @@ export const NewUserWelcomeView: React.FC<NewUserWelcomeViewProps> = ({
               Credited Paper Margin
             </span>
             <div className="text-3xl sm:text-4xl font-black text-emerald-400 mt-1">
-              ₹{balance.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              {balance !== null
+                ? `₹${balance.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                : 'Unavailable'}
             </div>
             <p className="text-[11px] text-slate-400 mt-1.5">
-              Ready for immediate order placement in NSE &amp; BSE equities
+              Ready for immediate order placement in NSE &amp; BSE paper equities
             </p>
           </div>
         </div>
@@ -123,7 +125,9 @@ export const NewUserWelcomeView: React.FC<NewUserWelcomeViewProps> = ({
             Ready to make your first trade?
           </h4>
           <p className="text-xs text-slate-500 mt-0.5">
-            Your ₹{balance.toLocaleString('en-IN', { maximumFractionDigits: 0 })} INR paper trading margin is loaded and ready.
+            {balance !== null
+              ? `Your ₹${balance.toLocaleString('en-IN', { maximumFractionDigits: 0 })} INR paper trading margin is loaded and ready.`
+              : 'Your paper trading account is active.'}
           </p>
         </div>
 

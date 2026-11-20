@@ -50,7 +50,9 @@ export const TradeModal: React.FC<TradeModalProps> = ({
   if (!isOpen || !stock) return null;
 
   const currentPrice = stock.currentPrice || 0.01;
-  const cashBalance = portfolio?.cashBalance ?? currentUser.cashBalance ?? 0;
+  const cashBalance = typeof portfolio?.cashBalance === 'number'
+    ? portfolio.cashBalance
+    : (typeof currentUser.cashBalance === 'number' ? currentUser.cashBalance : null);
   const ownedHolding = portfolio?.holdings?.find(h => h.symbol === stock.symbol);
   const ownedQuantity = ownedHolding ? ownedHolding.quantity : 0;
 
@@ -58,11 +60,11 @@ export const TradeModal: React.FC<TradeModalProps> = ({
   const estimatedFee = subtotal * 0.0015; // 0.15% fee
   const totalCost = tradeType === 'BUY' ? subtotal + estimatedFee : subtotal - estimatedFee;
 
-  const canAffordBuy = cashBalance >= totalCost && quantity > 0;
+  const canAffordBuy = cashBalance !== null && cashBalance >= totalCost && quantity > 0;
   const canAffordSell = ownedQuantity >= quantity && quantity > 0;
   const isTradeValid = tradeType === 'BUY' ? canAffordBuy : canAffordSell;
 
-  const maxBuyQty = Math.max(0, Math.floor(cashBalance / (currentPrice * 1.0015)));
+  const maxBuyQty = cashBalance !== null ? Math.max(0, Math.floor(cashBalance / (currentPrice * 1.0015))) : 0;
   const maxSellQty = Math.max(0, ownedQuantity);
 
   const handleExecuteTrade = async (e: React.FormEvent) => {
@@ -141,6 +143,12 @@ export const TradeModal: React.FC<TradeModalProps> = ({
           </div>
         )}
 
+        {tradeType === 'BUY' && cashBalance === null && (
+          <div className="mb-4 p-3 bg-amber-50 border border-amber-200 text-amber-800 text-xs rounded">
+            Available cash balance could not be verified from server. Please refresh portfolio before placing a BUY order.
+          </div>
+        )}
+
         {successMsg && (
           <div className="mb-4 p-3 bg-green-50 border border-green-200 text-green-700 text-xs rounded font-medium">
             {successMsg}
@@ -156,7 +164,9 @@ export const TradeModal: React.FC<TradeModalProps> = ({
             </div>
             <div className="flex justify-between">
               <span className="text-gray-600">Cash Balance:</span>
-              <span className="font-semibold text-gray-900">₹{cashBalance.toFixed(2)}</span>
+              <span className="font-semibold text-gray-900">
+                {cashBalance !== null ? `₹${cashBalance.toFixed(2)}` : 'Unavailable'}
+              </span>
             </div>
             <div className="flex justify-between">
               <span className="text-gray-600">You Currently Own:</span>
@@ -165,7 +175,9 @@ export const TradeModal: React.FC<TradeModalProps> = ({
             <div className="flex justify-between">
               <span className="text-gray-600">Max You Can {tradeType}:</span>
               <span className="font-semibold text-gray-900">
-                {tradeType === 'BUY' ? maxBuyQty : maxSellQty} shares
+                {tradeType === 'BUY' && cashBalance === null
+                  ? 'Unavailable'
+                  : `${tradeType === 'BUY' ? maxBuyQty : maxSellQty} shares`}
               </span>
             </div>
           </div>
@@ -176,8 +188,9 @@ export const TradeModal: React.FC<TradeModalProps> = ({
               <label className="text-xs font-medium text-gray-700">Quantity of Shares</label>
               <button
                 type="button"
+                disabled={tradeType === 'BUY' && cashBalance === null}
                 onClick={() => setQuantity(tradeType === 'BUY' ? maxBuyQty : maxSellQty)}
-                className="text-xs text-blue-600 hover:underline"
+                className="text-xs text-blue-600 hover:underline disabled:opacity-40"
               >
                 Set Max
               </button>

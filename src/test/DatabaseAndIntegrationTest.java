@@ -180,6 +180,11 @@ public class DatabaseAndIntegrationTest {
                     if (rs.next()) migCount = rs.getInt(1);
                 }
 
+                boolean hasRateLimitTable = false;
+                try (java.sql.ResultSet rs = conn.getMetaData().getTables(null, null, "login_rate_limits", null)) {
+                    hasRateLimitTable = rs.next();
+                }
+
                 double preservedBal = 0;
                 int preservedQty = 0;
                 try (java.sql.ResultSet rs = st.executeQuery("SELECT balance FROM users WHERE user_id = 'legacy_mig_u'")) {
@@ -189,8 +194,8 @@ public class DatabaseAndIntegrationTest {
                     if (rs.next()) preservedQty = rs.getInt(1);
                 }
 
-                assertTrue(hasAlertCol && hasFeeCol && hasPortfolioUniqueIdx && migCount >= 3,
-                        "MIG-1: Idempotent migrations added missing columns, unique portfolio(user_id,symbol), and tracked 3 migrations");
+                assertTrue(hasAlertCol && hasFeeCol && hasPortfolioUniqueIdx && hasRateLimitTable && migCount >= 4,
+                        "MIG-1: Idempotent migrations added missing columns, login_rate_limits table, unique portfolio(user_id,symbol), and tracked migrations");
                 assertTrue(Math.abs(preservedBal - 12345.67) < 0.001 && preservedQty == 7,
                         "MIG-2: Repeated migration preserved pre-existing user balance & portfolio rows without dropping tables");
             }

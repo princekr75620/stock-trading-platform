@@ -177,6 +177,21 @@ public class TradingPlatformHttpServer {
             applyCorsHeaders(exchange);
             applySecurityHeaders(exchange);
 
+            String remoteAddr = (exchange.getRemoteAddress() != null && exchange.getRemoteAddress().getAddress() != null)
+                    ? exchange.getRemoteAddress().getAddress().getHostAddress()
+                    : "127.0.0.1";
+            String hostError = AuthenticationFilter.validateHostAndForwardedHeaders(
+                    exchange.getRequestHeaders().getFirst("Host"),
+                    exchange.getRequestHeaders().getFirst("X-Forwarded-Host"),
+                    exchange.getRequestHeaders().getFirst("Forwarded"),
+                    remoteAddr,
+                    exchange.getRequestHeaders().getFirst("X-Gateway-Proxy-Secret")
+            );
+            if (hostError != null) {
+                sendJsonResponse(exchange, 403, "{\"success\":false,\"error\":\"" + JsonHelper.escape(hostError) + "\"}");
+                return;
+            }
+
             if ("OPTIONS".equalsIgnoreCase(exchange.getRequestMethod())) {
                 exchange.sendResponseHeaders(204, -1);
                 return;

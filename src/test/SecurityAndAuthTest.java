@@ -1,5 +1,6 @@
 package test;
 
+import dao.LoginRateLimitDAO;
 import exception.*;
 import filter.AuthenticationFilter;
 import model.*;
@@ -51,6 +52,9 @@ public class SecurityAndAuthTest {
         testValidAndInvalidLogin();
         testAccountLockoutPolicy();
         testTimeBoundedLockoutExpiryAndParallelLoginConcurrency();
+        testPersistentDbRateLimitingNormalizationAndConcurrency();
+        testLoginServletAntiEnumerationAndErrorHandling();
+        testSpoofedForwardedHostAndOriginRejected();
         testRegistrationAdminPrivilegeEscalationPrevented();
         testWeakPasswordAndDynamicSecurityScore();
         testNormalUserDeniedAdminAccess();
@@ -157,31 +161,49 @@ public class SecurityAndAuthTest {
                 "testInvalidLogin - Generic error messages are identical, mitigating enumeration risks");
     }
 
+    private static void resetRateKeysQuietly(LoginRateLimitDAO dao, String... keys) {
+        if (dao == null || keys == null) return;
+        for (String k : keys) {
+            try {
+                dao.reset(k);
+            } catch (Exception ignored) {}
+        }
+    }
+
     public static void testAccountLockoutPolicy() {
         SecuritySettings settings = new SecuritySettings();
         settings.setAutomaticAccountLockout(true);
         settings.setMaxFailedLoginAttempts(3);
         SecurityService secService = new SecurityService(settings, null);
+        LoginRateLimitDAO rateDao = new LoginRateLimitDAO();
+        String testIp = "198.51.100.10";
 
-        User user = new Trader("lockoutUser", "Lockout Test", "lock@trade.in", PasswordHasher.hashPassword("correct123"), 50000.0);
-        Map<String, User> userMap = new HashMap<>();
-        userMap.put(user.getUserId(), user);
-        IUserService userService = new UserService(userMap);
-        AuthenticationService authService = new AuthenticationService(userService, secService);
-
-        for (int i = 0; i < 3; i++) {
-            try {
-                authService.login("lockoutUser", "wrongPass" + i);
-            } catch (InvalidLoginException ignored) {}
-        }
-
-        boolean locked = false;
         try {
-            authService.login("lockoutUser", "correct123");
-        } catch (InvalidLoginException e) {
-            locked = e.getMessage().toLowerCase().contains("locked");
+            resetRateKeysQuietly(rateDao, "acct:lockoutuser", "ip:" + testIp);
+
+            User user = new Trader("lockoutUser", "Lockout Test", "lock@trade.in", PasswordHasher.hashPassword("correct123"), 50000.0);
+            Map<String, User> userMap = new HashMap<>();
+            userMap.put(user.getUserId(), user);
+            IUserService userService = new UserService(userMap);
+            AuthenticationService authService = new AuthenticationService(
+                    userService, secService, rateDao, 60_000L, 600_000L, 600_000L);
+
+            for (int i = 0; i < 3; i++) {
+                try {
+                    authService.login("lockoutUser", "wrongPass" + i, testIp);
+                } catch (InvalidLoginException ignored) {}
+            }
+
+            boolean throttled = false;
+            try {
+                authService.login("lockoutUser", "correct123", testIp);
+            } catch (AuthenticationThrottledException e) {
+                throttled = e.getRetryAfterSeconds() >= 1 && e.getMessage().toLowerCase().contains("too many");
+            } catch (InvalidLoginException ignored) {}
+            assertTrue(throttled, "testAccountLockoutPolicy - Enforces persistent DB-backed progressive throttle after threshold");
+        } finally {
+            resetRateKeysQuietly(rateDao, "acct:lockoutuser", "ip:" + testIp);
         }
-        assertTrue(locked, "testAccountLockoutPolicy - Enforces automatic account lockout after threshold");
     }
 
     public static void testRegistrationAdminPrivilegeEscalationPrevented() {
@@ -587,6 +609,7 @@ public class SecurityAndAuthTest {
                         switch (m.getName()) {
                             case "getMethod": return method;
                             case "getRequestURI": return uri;
+                            case "getRemoteAddr": return "127.0.0.1";
                             case "getScheme": return "http";
                             case "getServerName": return "localhost";
                             case "getHeader": return lookupHeader((String) args[0]);
@@ -637,48 +660,333 @@ public class SecurityAndAuthTest {
         settings.setAutomaticAccountLockout(true);
         settings.setMaxFailedLoginAttempts(3);
         SecurityService secService = new SecurityService(settings, null);
+        LoginRateLimitDAO rateDao = new LoginRateLimitDAO();
+        String testIp1 = "198.51.100.21";
+        String testIp2 = "198.51.100.22";
 
-        String hash1 = PasswordHasher.hashPassword("LockExpire@2026!");
-        String hash2 = PasswordHasher.hashPassword("OtherUser@2026!");
-        Map<String, User> userMap = new HashMap<>();
-        userMap.put("expLockUser", new Trader("expLockUser", "Expire User", "explock@trade.in", hash1, 50000.0));
-        userMap.put("otherCleanUser", new Trader("otherCleanUser", "Clean User", "clean@trade.in", hash2, 50000.0));
-        IUserService userService = new UserService(userMap);
+        try {
+            resetRateKeysQuietly(rateDao, "acct:explockuser", "acct:othercleanuser", "ip:" + testIp1, "ip:" + testIp2);
 
-        AuthenticationService shortLockAuth = new AuthenticationService(userService, secService, 2500L);
-        for (int i = 0; i < 3; i++) {
+            String hash1 = PasswordHasher.hashPassword("LockExpire@2026!");
+            String hash2 = PasswordHasher.hashPassword("OtherUser@2026!");
+            Map<String, User> userMap = new HashMap<>();
+            userMap.put("expLockUser", new Trader("expLockUser", "Expire User", "explock@trade.in", hash1, 50000.0));
+            userMap.put("otherCleanUser", new Trader("otherCleanUser", "Clean User", "clean@trade.in", hash2, 50000.0));
+            IUserService userService = new UserService(userMap);
+
+            AuthenticationService shortLockAuth = new AuthenticationService(
+                    userService, secService, rateDao, 1500L, 15_000L, 60_000L);
+            for (int i = 0; i < 3; i++) {
+                try {
+                    shortLockAuth.login("expLockUser", "WrongPass" + i, testIp1);
+                } catch (InvalidLoginException ignored) {}
+            }
+
+            boolean throttledInitially = false;
             try {
-                shortLockAuth.login("expLockUser", "WrongPass" + i);
+                shortLockAuth.login("expLockUser", "LockExpire@2026!", testIp1);
+            } catch (AuthenticationThrottledException e) {
+                throttledInitially = e.getMessage().toLowerCase().contains("too many");
             } catch (InvalidLoginException ignored) {}
+
+            // Other user from a distinct IP is completely unaffected while expLockUser is throttled
+            boolean otherUserSucceeded = false;
+            try {
+                User other = shortLockAuth.login("otherCleanUser", "OtherUser@2026!", testIp2);
+                otherUserSucceeded = (other != null && "otherCleanUser".equals(other.getUserId()));
+            } catch (Exception ignored) {}
+
+            try {
+                Thread.sleep(1700L);
+            } catch (InterruptedException ignored) {}
+
+            boolean unlockedAfterExpiry = false;
+            try {
+                User recovered = shortLockAuth.login("expLockUser", "LockExpire@2026!", testIp1);
+                unlockedAfterExpiry = (recovered != null && "expLockUser".equals(recovered.getUserId()));
+            } catch (Exception ignored) {}
+
+            assertTrue(throttledInitially && otherUserSucceeded && unlockedAfterExpiry
+                            && shortLockAuth.getCurrentUser() == null && !shortLockAuth.isAuthenticated(),
+                    "testTimeBoundedLockoutExpiry - Progressive throttle expires automatically without permanent lockout or locking unrelated users");
+        } finally {
+            resetRateKeysQuietly(rateDao, "acct:explockuser", "acct:othercleanuser", "ip:" + testIp1, "ip:" + testIp2);
         }
+    }
 
-        boolean lockedInitially = false;
+    public static void testPersistentDbRateLimitingNormalizationAndConcurrency() {
+        SecuritySettings settings = new SecuritySettings();
+        settings.setAutomaticAccountLockout(true);
+        settings.setMaxFailedLoginAttempts(3);
+        SecurityService secService = new SecurityService(settings, null);
+        LoginRateLimitDAO rateDao = new LoginRateLimitDAO();
+        String sharedIp = "198.51.100.33";
+        String unknownKey = "acct:nonexistent_enum_probe";
+
         try {
-            shortLockAuth.login("expLockUser", "LockExpire@2026!");
-        } catch (InvalidLoginException e) {
-            lockedInitially = e.getMessage().toLowerCase().contains("locked");
+            resetRateKeysQuietly(rateDao, "acct:normuser", unknownKey, "ip:" + sharedIp);
+
+            String hash = PasswordHasher.hashPassword("NormPass@2026!");
+            Map<String, User> userMap = new HashMap<>();
+            userMap.put("normUser", new Trader("normUser", "Normalized User", "norm@trade.in", hash, 50000.0));
+            IUserService userService = new UserService(userMap);
+
+            // Instance 1 receives mixed-case / whitespace-padded attempts
+            AuthenticationService instance1 = new AuthenticationService(
+                    userService, secService, rateDao, 30_000L, 120_000L, 600_000L);
+            try { instance1.login(" NormUser ", "bad1", "198.51.100.41"); } catch (InvalidLoginException ignored) {}
+            try { instance1.login("NORMUSER", "bad2", "198.51.100.42"); } catch (InvalidLoginException ignored) {}
+
+            // Instance 2 simulates a different backend node / restarted service sharing the DB
+            AuthenticationService instance2 = new AuthenticationService(
+                    userService, secService, rateDao, 30_000L, 120_000L, 600_000L);
+            try { instance2.login("normuser", "bad3", "198.51.100.43"); } catch (InvalidLoginException ignored) {}
+
+            boolean sharedLockAcrossRestart = false;
+            try {
+                instance2.login("normUser", "NormPass@2026!", "198.51.100.44");
+            } catch (AuthenticationThrottledException e) {
+                sharedLockAcrossRestart = e.getRetryAfterSeconds() >= 1;
+            } catch (InvalidLoginException ignored) {}
+
+            assertTrue(sharedLockAcrossRestart,
+                    "testPersistentDbRateLimiting - Normalizes identifiers and enforces throttle across restarted/separate service instances via DB");
+
+            // Unknown account also throttles on same key (anti-enumeration parity)
+            for (int i = 0; i < 3; i++) {
+                try {
+                    instance1.login("nonexistent_enum_probe", "bad" + i, "198.51.100.45");
+                } catch (InvalidLoginException ignored) {}
+            }
+            boolean unknownUserThrottled = false;
+            try {
+                instance2.login("nonexistent_enum_probe", "anypass", "198.51.100.46");
+            } catch (AuthenticationThrottledException e) {
+                unknownUserThrottled = true;
+            } catch (InvalidLoginException ignored) {}
+
+            assertTrue(unknownUserThrottled,
+                    "testPersistentDbRateLimiting - Throttles nonexistent account probes consistently via DB without existence leakage");
+
+            // Concurrent failure accounting against shared IP rate key
+            resetRateKeysQuietly(rateDao, "ip:" + sharedIp);
+            List<Thread> workers = new ArrayList<>();
+            for (int i = 0; i < 6; i++) {
+                final int idx = i;
+                workers.add(new Thread(() -> {
+                    try {
+                        instance1.login("unknown_par_" + idx, "bad", sharedIp);
+                    } catch (InvalidLoginException ignored) {}
+                }));
+            }
+            for (Thread t : workers) t.start();
+            for (Thread t : workers) {
+                try { t.join(); } catch (InterruptedException ignored) {}
+            }
+            int activeIpCount = 0;
+            try {
+                activeIpCount = rateDao.getActiveAttemptCount("ip:" + sharedIp, 600_000L, System.currentTimeMillis());
+            } catch (Exception ignored) {}
+            assertTrue(activeIpCount >= 6,
+                    "testPersistentDbRateLimiting - Concurrent login failures recorded accurately in DB rate limiter");
+
+        } finally {
+            resetRateKeysQuietly(rateDao, "acct:normuser", unknownKey, "ip:" + sharedIp);
+            for (int i = 0; i < 6; i++) {
+                resetRateKeysQuietly(rateDao, "acct:unknown_par_" + i);
+            }
+            for (int p = 41; p <= 46; p++) {
+                resetRateKeysQuietly(rateDao, "ip:198.51.100." + p);
+            }
         }
+    }
 
-        // Other user is completely unaffected while expLockUser is locked
-        boolean otherUserSucceeded = false;
+    public static void testLoginServletAntiEnumerationAndErrorHandling() {
+        servlet.LoginServlet loginServlet = new servlet.LoginServlet();
+        LoginRateLimitDAO rateDao = new LoginRateLimitDAO();
+        String existingUid = "enumCheckUser";
+        String unknownUid = "enumUnknownUser";
+
         try {
-            User other = shortLockAuth.login("otherCleanUser", "OtherUser@2026!");
-            otherUserSucceeded = (other != null && "otherCleanUser".equals(other.getUserId()));
-        } catch (Exception ignored) {}
+            resetRateKeysQuietly(rateDao, "acct:" + existingUid.toLowerCase(), "acct:" + unknownUid.toLowerCase(), "ip:127.0.0.1");
+
+            SecuritySettings settings = new SecuritySettings();
+            settings.setAutomaticAccountLockout(true);
+            settings.setMaxFailedLoginAttempts(3);
+            SecurityService secService = new SecurityService(settings, null);
+            String hash = PasswordHasher.hashPassword("CorrectPass@2026!");
+            Map<String, User> userMap = new HashMap<>();
+            userMap.put(existingUid, new Trader(existingUid, "Enum Check", "enum@trade.in", hash, 50000.0));
+            IUserService userService = new UserService(userMap);
+            AuthenticationService authService = new AuthenticationService(
+                    userService, secService, rateDao, 30_000L, 120_000L, 600_000L);
+
+            servlet.BaseServlet.initializeServices(userService, null, null, null, null, secService, null, null, authService);
+
+            // 1. Existing user with wrong password
+            MockHttpServletRequest reqBadPass = new MockHttpServletRequest("POST", "/api/auth/login", null);
+            reqBadPass.body = "{\"usernameOrEmail\":\"enumCheckUser\",\"password\":\"WrongPass1!\"}";
+            MockHttpServletResponse respBadPass = new MockHttpServletResponse();
+            loginServlet.service(reqBadPass.toProxy(), respBadPass.toProxy());
+
+            // Reset IP rate limit between isolated probe comparisons
+            resetRateKeysQuietly(rateDao, "ip:127.0.0.1");
+
+            // 2. Nonexistent user with same request structure
+            MockHttpServletRequest reqUnknown = new MockHttpServletRequest("POST", "/api/auth/login", null);
+            reqUnknown.body = "{\"usernameOrEmail\":\"enumUnknownUser\",\"password\":\"WrongPass1!\"}";
+            MockHttpServletResponse respUnknown = new MockHttpServletResponse();
+            loginServlet.service(reqUnknown.toProxy(), respUnknown.toProxy());
+
+            assertTrue(respBadPass.status == 401 && respUnknown.status == 401
+                            && respBadPass.body.toString().equals(respUnknown.body.toString())
+                            && respBadPass.body.toString().contains("Invalid username/email or password."),
+                    "testLoginServletAntiEnumeration - Wrong password and nonexistent user return identical 401 generic JSON");
+
+            // 3. Trigger throttling -> returns 429 + Retry-After with generic non-leaky error
+            resetRateKeysQuietly(rateDao, "ip:127.0.0.1");
+            for (int i = 0; i < 3; i++) {
+                MockHttpServletRequest r = new MockHttpServletRequest("POST", "/api/auth/login", null);
+                r.body = "{\"usernameOrEmail\":\"enumCheckUser\",\"password\":\"Bad" + i + "\"}";
+                loginServlet.service(r.toProxy(), new MockHttpServletResponse().toProxy());
+            }
+            MockHttpServletRequest reqThrottled = new MockHttpServletRequest("POST", "/api/auth/login", null);
+            reqThrottled.body = "{\"usernameOrEmail\":\"enumCheckUser\",\"password\":\"CorrectPass@2026!\"}";
+            MockHttpServletResponse respThrottled = new MockHttpServletResponse();
+            loginServlet.service(reqThrottled.toProxy(), respThrottled.toProxy());
+
+            assertTrue(respThrottled.status == 429
+                            && respThrottled.headers.containsKey("Retry-After")
+                            && !respThrottled.body.toString().toLowerCase().contains("locked")
+                            && respThrottled.body.toString().contains("Too many authentication requests"),
+                    "testLoginServletAntiEnumeration - Throttled logins return 429 + Retry-After without leaking account state");
+
+            // 4. Unexpected internal service failure -> returns safe generic 500 JSON (never e.getMessage())
+            IAuthenticationService brokenAuth = new IAuthenticationService() {
+                @Override
+                public User login(String u, String p) throws InvalidLoginException {
+                    throw new RuntimeException("SENSITIVE_SQL_DETAIL: jdbc:mysql://secret-host/db");
+                }
+                @Override
+                public User login(String u, String p, String ip) throws InvalidLoginException {
+                    throw new RuntimeException("SENSITIVE_SQL_DETAIL: jdbc:mysql://secret-host/db");
+                }
+                @Override public void logout() {}
+                @Override public User getCurrentUser() { return null; }
+                @Override public boolean isAuthenticated() { return false; }
+                @Override public int getFailedAttempts(String identifier) { return 0; }
+                @Override public void resetFailedAttempts(String identifier) {}
+            };
+            servlet.BaseServlet.initializeServices(userService, null, null, null, null, secService, null, null, brokenAuth);
+            MockHttpServletRequest reqCrash = new MockHttpServletRequest("POST", "/api/auth/login", null);
+            reqCrash.body = "{\"usernameOrEmail\":\"enumCheckUser\",\"password\":\"CorrectPass@2026!\"}";
+            MockHttpServletResponse respCrash = new MockHttpServletResponse();
+            loginServlet.service(reqCrash.toProxy(), respCrash.toProxy());
+
+            assertTrue(respCrash.status == 500
+                            && !respCrash.body.toString().contains("SENSITIVE_SQL_DETAIL")
+                            && respCrash.body.toString().contains("Authentication service is temporarily unavailable"),
+                    "testLoginServletAntiEnumeration - Internal failures return sanitized 500 JSON without exposing exception details");
+        } catch (Exception e) {
+            e.printStackTrace();
+            assertTrue(false, "testLoginServletAntiEnumeration - Unexpected test exception: " + e.getMessage());
+        } finally {
+            resetRateKeysQuietly(rateDao, "acct:" + existingUid.toLowerCase(), "acct:" + unknownUid.toLowerCase(), "ip:127.0.0.1");
+        }
+    }
+
+    public static void testSpoofedForwardedHostAndOriginRejected() {
+        AuthenticationFilter filter = new AuthenticationFilter();
+        try { filter.init(null); } catch (Exception ignored) {}
+
+        User trader = new Trader("proxyTester", "Proxy Tester", "proxy@trade.in", "hash", 50000.0);
+        MockSession session = new MockSession("sess-proxy-test");
+        session.setAttribute("user", trader);
+        session.setAttribute("csrfToken", "valid-csrf-token");
 
         try {
-            Thread.sleep(2600L);
-        } catch (InterruptedException ignored) {}
+            // 1. Spoofed X-Forwarded-Host: evil.com + Origin: http://evil.com MUST be rejected (403)
+            MockHttpServletRequest spoofReq = new MockHttpServletRequest("POST", "/api/trades/buy", session);
+            spoofReq.headers.put("Host", "localhost:3000");
+            spoofReq.headers.put("X-Forwarded-Host", "evil.com");
+            spoofReq.headers.put("Origin", "http://evil.com");
+            spoofReq.headers.put("X-CSRF-Token", "valid-csrf-token");
+            MockHttpServletResponse spoofResp = new MockHttpServletResponse();
+            filter.doFilter(spoofReq.toProxy(), spoofResp.toProxy(), (req, resp) -> {});
+            assertTrue(spoofResp.status == 403,
+                    "testSpoofedForwardedHost - Spoofed X-Forwarded-Host: evil.com + Origin: http://evil.com rejected (403)");
 
-        boolean unlockedAfterExpiry = false;
-        try {
-            User recovered = shortLockAuth.login("expLockUser", "LockExpire@2026!");
-            unlockedAfterExpiry = (recovered != null && "expLockUser".equals(recovered.getUserId()));
-        } catch (Exception ignored) {}
+            // 2. Spoofed X-Forwarded-Host on public GET route rejected (403)
+            MockHttpServletRequest spoofGet = new MockHttpServletRequest("GET", "/api/stocks", null);
+            spoofGet.headers.put("Host", "localhost:3000");
+            spoofGet.headers.put("X-Forwarded-Host", "evil.com");
+            MockHttpServletResponse spoofGetResp = new MockHttpServletResponse();
+            filter.doFilter(spoofGet.toProxy(), spoofGetResp.toProxy(), (req, resp) -> {});
+            assertTrue(spoofGetResp.status == 403,
+                    "testSpoofedForwardedHost - Untrusted X-Forwarded-Host rejected on GET route (403)");
 
-        assertTrue(lockedInitially && otherUserSucceeded && unlockedAfterExpiry
-                        && shortLockAuth.getCurrentUser() == null && !shortLockAuth.isAuthenticated(),
-                "testTimeBoundedLockoutExpiry - Lockout expires automatically after duration without locking unrelated users or retaining mutable currentUser");
+            // 3. Untrusted Host header rejected (403)
+            MockHttpServletRequest badHost = new MockHttpServletRequest("GET", "/api/stocks", null);
+            badHost.headers.put("Host", "attacker.example.com");
+            MockHttpServletResponse badHostResp = new MockHttpServletResponse();
+            filter.doFilter(badHost.toProxy(), badHostResp.toProxy(), (req, resp) -> {});
+            assertTrue(badHostResp.status == 403,
+                    "testSpoofedForwardedHost - Untrusted Host header rejected (403)");
+
+            // 4. Spoofed Origin on public login POST rejected (403)
+            MockHttpServletRequest badLoginOrigin = new MockHttpServletRequest("POST", "/api/auth/login", null);
+            badLoginOrigin.headers.put("Host", "localhost:3000");
+            badLoginOrigin.headers.put("Origin", "https://evil.com");
+            MockHttpServletResponse badLoginResp = new MockHttpServletResponse();
+            filter.doFilter(badLoginOrigin.toProxy(), badLoginResp.toProxy(), (req, resp) -> {});
+            assertTrue(badLoginResp.status == 403,
+                    "testSpoofedForwardedHost - Untrusted Origin on POST /api/auth/login rejected (403)");
+
+            // 5. Untrusted client cannot spoof X-Forwarded-For to bypass IP rate limiting
+            MockHttpServletRequest xffSpoof = new MockHttpServletRequest("POST", "/api/auth/login", null);
+            xffSpoof.headers.put("X-Forwarded-For", "203.0.113.99");
+            String resolvedDefault = AuthenticationFilter.resolveClientIp(xffSpoof.toProxy());
+            assertTrue("127.0.0.1".equals(resolvedDefault),
+                    "testSpoofedForwardedHost - Untrusted X-Forwarded-For ignored; resolves direct socket remoteAddr (127.0.0.1)");
+
+            // 6. Configured trusted proxy IP honors X-Forwarded-For
+            System.setProperty("TRUST_PROXY", "true");
+            System.setProperty("TRUSTED_PROXIES", "127.0.0.1");
+            String resolvedTrusted = AuthenticationFilter.resolveClientIp(xffSpoof.toProxy());
+            assertTrue("203.0.113.99".equals(resolvedTrusted),
+                    "testSpoofedForwardedHost - Explicitly trusted proxy IP honors sanitized X-Forwarded-For");
+
+            // 7. Legitimate configured ALLOWED_ORIGINS / APP_URL origin allowed when configured
+            String activeAppUrl = util.EnvConfig.get("APP_URL");
+            String testOrigin = "https://ais-preview-test.run.app";
+            String testHost = "ais-preview-test.run.app";
+            if (activeAppUrl != null && !activeAppUrl.trim().isEmpty()) {
+                java.net.URI u = java.net.URI.create(activeAppUrl.trim());
+                testOrigin = (u.getScheme() + "://" + u.getHost() + (u.getPort() > 0 ? ":" + u.getPort() : "")).toLowerCase();
+                testHost = (u.getHost() + (u.getPort() > 0 ? ":" + u.getPort() : "")).toLowerCase();
+            } else {
+                System.setProperty("ALLOWED_ORIGINS", testOrigin);
+                System.setProperty("ALLOWED_HOSTS", testHost);
+            }
+            MockHttpServletRequest appUrlPost = new MockHttpServletRequest("POST", "/api/trades/buy", session);
+            appUrlPost.headers.put("Host", testHost);
+            appUrlPost.headers.put("Origin", testOrigin);
+            appUrlPost.headers.put("X-CSRF-Token", "valid-csrf-token");
+            MockHttpServletResponse appUrlResp = new MockHttpServletResponse();
+            final boolean[] passed = {false};
+            filter.doFilter(appUrlPost.toProxy(), appUrlResp.toProxy(), (req, resp) -> passed[0] = true);
+            assertTrue(passed[0] && appUrlResp.status == 200,
+                    "testSpoofedForwardedHost - Legitimate configured APP_URL/ALLOWED_ORIGINS host & origin permitted cleanly");
+        } catch (Exception e) {
+            e.printStackTrace();
+            assertTrue(false, "testSpoofedForwardedHost - Unexpected test error: " + e.getMessage());
+        } finally {
+            System.clearProperty("TRUST_PROXY");
+            System.clearProperty("TRUSTED_PROXIES");
+            System.clearProperty("ALLOWED_ORIGINS");
+            System.clearProperty("ALLOWED_HOSTS");
+            System.clearProperty("APP_URL");
+        }
     }
 
     public static void testWeakPasswordAndDynamicSecurityScore() {

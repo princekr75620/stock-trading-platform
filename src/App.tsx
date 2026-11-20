@@ -35,6 +35,8 @@ export default function App() {
   // Live Market & Trading State
   const [stocks, setStocks] = useState<Stock[]>([]);
   const [portfolio, setPortfolio] = useState<Portfolio | null>(null);
+  const [portfolioLoading, setPortfolioLoading] = useState<boolean>(false);
+  const [portfolioError, setPortfolioError] = useState<string | null>(null);
   const [trades, setTrades] = useState<Trade[]>([]);
   const [marketUpdates, setMarketUpdates] = useState<MarketUpdate[]>([]);
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
@@ -68,20 +70,44 @@ export default function App() {
   const loadUserData = useCallback(async (user: User) => {
     try {
       if (user.role === 'TRADER') {
-        const [portRes, tradesRes, notifsRes] = await Promise.all([
-          api.getPortfolio(user.userId).catch(() => null),
-          api.getTrades(user.userId).catch(() => []),
-          api.getNotifications(user.userId).catch(() => []),
+        setPortfolioLoading(true);
+        const [portResult, tradesRes, notifsRes] = await Promise.allSettled([
+          api.getPortfolio(user.userId),
+          api.getTrades(user.userId),
+          api.getNotifications(user.userId),
         ]);
 
-        if (portRes) setPortfolio(portRes);
-        if (tradesRes) setTrades(tradesRes);
-        if (notifsRes) setNotifications(notifsRes);
+        if (portResult.status === 'fulfilled' && portResult.value) {
+          const portRes = portResult.value;
+          setPortfolio(portRes);
+          setPortfolioError(null);
+          if (typeof portRes.cashBalance === 'number') {
+            setCurrentUser(prev =>
+              prev && prev.userId === user.userId
+                ? { ...prev, cashBalance: portRes.cashBalance }
+                : prev
+            );
+          }
+        } else {
+          const reason = portResult.status === 'rejected'
+            ? (portResult.reason?.message || 'Failed to load authoritative portfolio balance.')
+            : 'Portfolio data unavailable.';
+          setPortfolioError(reason);
+        }
+
+        if (tradesRes.status === 'fulfilled' && Array.isArray(tradesRes.value)) {
+          setTrades(tradesRes.value);
+        }
+        if (notifsRes.status === 'fulfilled' && Array.isArray(notifsRes.value)) {
+          setNotifications(notifsRes.value);
+        }
+        setPortfolioLoading(false);
       } else {
         const notifsRes = await api.getNotifications(user.userId).catch(() => []);
         setNotifications(notifsRes || []);
       }
     } catch (err) {
+      setPortfolioLoading(false);
       console.warn('User data fetch warning:', err);
     }
   }, []);
@@ -156,6 +182,11 @@ export default function App() {
       console.warn('Logout notification:', e);
     }
     setCurrentUser(null);
+    setPortfolio(null);
+    setPortfolioError(null);
+    setPortfolioLoading(false);
+    setTrades([]);
+    setNotifications([]);
     setShowLoginModal(true);
     setIsNewUserOnboarding(false);
     setActiveTab('dashboard');
@@ -239,6 +270,9 @@ export default function App() {
               <TraderDashboard
                 currentUser={currentUser}
                 portfolio={portfolio}
+                portfolioLoading={portfolioLoading}
+                portfolioError={portfolioError}
+                onRetryPortfolio={() => loadUserData(currentUser)}
                 stocks={stocks}
                 trades={trades}
                 marketUpdates={marketUpdates}
@@ -258,6 +292,9 @@ export default function App() {
             {activeTab === 'portfolio' && (
               <PortfolioView
                 portfolio={portfolio}
+                portfolioLoading={portfolioLoading}
+                portfolioError={portfolioError}
+                onRetryPortfolio={() => loadUserData(currentUser)}
                 stocks={stocks}
                 onOpenTrade={handleOpenTrade}
               />
@@ -315,15 +352,13 @@ export default function App() {
       <footer className="border-t border-slate-200 bg-white py-4 px-4 sm:px-6 lg:px-8 mt-auto text-xs text-slate-600 shadow-xs">
         <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-3">
           <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
-            <span className="font-bold text-slate-900">BHARAT EQUITIES EXCHANGE</span>
+            <span className="font-bold text-slate-900">BHARAT STOCKS (PAPER)</span>
             <span>&bull;</span>
-            <span>NSE Member: 90214</span>
+            <span>Simulated Indian Equities Desk</span>
             <span>&bull;</span>
-            <span>BSE Clearing: 6712</span>
+            <span>NSE / BSE Delayed &amp; Simulated Quotes</span>
             <span>&bull;</span>
-            <span>SEBI Reg: INZ000205836</span>
-            <span>&bull;</span>
-            <span className="text-emerald-700 font-semibold">CDSL / NSDL Depository</span>
+            <span className="text-emerald-700 font-semibold">JDBC Persistent Paper Ledger</span>
           </div>
 
           <div className="flex items-center space-x-3 shrink-0">

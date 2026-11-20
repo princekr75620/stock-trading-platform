@@ -71,7 +71,10 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess }) => {
       });
 
       if (res.success && res.user) {
-        setRegSuccess(`Registration complete! Client ID: ${generatedUsername}. ₹50,000 INR trading balance credited.`);
+        const creditedMsg = typeof res.user.cashBalance === 'number'
+          ? ` ₹${res.user.cashBalance.toLocaleString('en-IN')} INR paper trading balance credited.`
+          : '';
+        setRegSuccess(`Registration complete! Client ID: ${res.user.userId || generatedUsername}.${creditedMsg}`);
         setTimeout(() => {
           onLoginSuccess(res.user, true);
         }, 1200);
@@ -149,7 +152,7 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess }) => {
               </div>
 
               <h1 className="text-2xl sm:text-3xl font-extrabold text-white leading-tight mb-3">
-                India's Next-Gen Institutional Trading Desk
+                Simulated Indian Equities Paper Trading Desk
               </h1>
 
               <p className="text-slate-400 text-xs sm:text-sm leading-relaxed mb-6">
@@ -275,7 +278,7 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess }) => {
                       <input type="checkbox" defaultChecked className="rounded border-slate-700 bg-slate-950 text-orange-500 focus:ring-0" />
                       <span>Remember Client ID</span>
                     </label>
-                    <span className="text-slate-500">2FA Protected</span>
+                    <span className="text-slate-500">CSRF &amp; Session Protected</span>
                   </div>
 
                   <button
@@ -425,14 +428,14 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLoginSuccess }) => {
               )}
             </div>
 
-            {/* Bottom Institutional Badges */}
+            {/* Bottom Paper Simulation Badges */}
             <div className="mt-6 pt-4 border-t border-slate-800 text-[10px] text-slate-500 flex flex-wrap items-center justify-between gap-2">
               <span className="flex items-center space-x-1">
                 <span>🔒</span>
-                <span>256-Bit SSL Encryption</span>
+                <span>BCrypt &amp; CSRF Protection</span>
               </span>
-              <span>NSE &bull; BSE &bull; NSDL &bull; CDSL</span>
-              <span>100% Indian Equity Compliance</span>
+              <span>NSE &bull; BSE Reference Simulation</span>
+              <span>Academic Paper Trading Project</span>
             </div>
           </div>
         </div>

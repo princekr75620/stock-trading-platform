@@ -11,7 +11,7 @@
 5. [Database Migrations, Backup & Rollback Procedures](#5-database-migrations-backup--rollback-procedures)
 6. [Environment Variables Reference (Node.js vs Java)](#6-environment-variables-reference-nodejs-vs-java)
 7. [Security Architecture & Local-Only Demo Accounts](#7-security-architecture--local-only-demo-accounts)
-8. [Automated Testing & Verification Results (183/183 Passed)](#8-automated-testing--verification-results-183183-passed)
+8. [Automated Testing & Verification Results (216/216 Passed)](#8-automated-testing--verification-results-216216-passed)
 9. [Setup, Build, CI & Production Deployment Guide](#9-setup-build-ci--production-deployment-guide)
 
 ---
@@ -29,10 +29,10 @@ The **Java Web-Based Indian Stock Trading Platform** is a full-stack simulated e
   - **Development Default Engine:** Embedded **SQLite** (`data/stock_trading.db`) via `org.sqlite.JDBC` with `PRAGMA foreign_keys = ON`, `busy_timeout=5000`, and `transaction_mode=IMMEDIATE`.
   - **Production Relational Engine:** **MySQL 8.x** (`com.mysql.cj.jdbc.Driver`), enabled explicitly via `DB_TYPE=mysql`, enforcing TLS certificate verification (`VERIFY_IDENTITY` / `VERIFY_CA`), `DECIMAL(15, 2)` monetary columns, and pessimistic `FOR UPDATE` row locking. No silent fallback to SQLite or in-memory maps occurs when `DB_TYPE=mysql` is configured.
 - **Persistent Financial Ledger vs. Transient Runtime State:**
-  - **Authoritative JDBC Tables:** `users`, `stocks`, `portfolio`, `transactions`, `trade_idempotency`, `watchlist`, and `schema_migrations` are read and mutated exclusively via JDBC DAOs (`UserDAO`, `StockDAO`, `PortfolioDAO`, `TransactionDAO`, `WatchlistDAO`).
+  - **Authoritative JDBC Tables:** `users`, `stocks`, `portfolio`, `transactions`, `trade_idempotency`, `watchlist`, `login_rate_limits`, and `schema_migrations` are read and mutated exclusively via JDBC DAOs (`UserDAO`, `StockDAO`, `PortfolioDAO`, `TransactionDAO`, `WatchlistDAO`, `LoginRateLimitDAO`).
   - **Transient Runtime State:** Intraday headline news ticker cache (`MarketUpdateService`), runtime notification feed (`NotificationService`), and security alert policy state operate in memory while stock price updates flush to `StockDAO`.
 - **Financial Precision:** `java.math.BigDecimal` (`scale=2`, `RoundingMode.HALF_UP`) via `util.MoneyUtil` across order totals, 0.15% brokerage fees, cash balances, weighted-average cost basis, and dashboard/portfolio valuations.
-- **Security & Cryptography:** Damien Miller jBCrypt (`$2a$12$`) via `PasswordHasher`, session-bound CSRF tokens + `Origin`/`Referer` validation, session fixation defense, sliding inactivity timeouts, owner-only/RBAC authorization (`AuthenticationFilter`), and fail-fast startup environment validation.
+- **Security & Cryptography:** Damien Miller jBCrypt (`$2a$12$`) via `PasswordHasher`, DB-backed progressive authentication throttling (`LoginRateLimitDAO`), anti-enumeration login handling, session-bound CSRF tokens + `Host`/`Origin`/`Referer` + trusted-proxy validation, session fixation defense, sliding inactivity timeouts, owner-only/RBAC authorization (`AuthenticationFilter`), and fail-fast startup environment validation.
 - **API Gateway & SPA Frontend:** Express gateway (`server.ts`, port `3000`, `dotenv/config`) + React 19 / TypeScript / Tailwind CSS SPA.
 
 ---
@@ -80,7 +80,9 @@ All monetary columns use exact fixed-point **`DECIMAL(15, 2)`** across both MySQ
    - Composite PK `(user_id, idempotency_key)`, FK -> `transactions(id)`.
 6. **`watchlist`**:
    - `id` PK, `user_id` FK -> `users(user_id) ON DELETE CASCADE`, `symbol`, `added_at`, `UNIQUE(user_id, symbol)`.
-7. **`schema_migrations`**:
+7. **`login_rate_limits`**:
+   - `rate_key` (`VARCHAR(255)` PK, normalized `acct:<id>` or `ip:<addr>`), `scope` (`'ACCOUNT' | 'IP'`), `attempt_count`, `last_attempt_at`, `throttle_until`. Coordinates progressive temporary backoff persistently across restarts and server instances without permanent lockout or account-existence leakage.
+8. **`schema_migrations`**:
    - `version` (`VARCHAR(50)` PK), `description`, `applied_at`.
 
 ---
@@ -120,6 +122,7 @@ On startup, `DBConnection.initializeSchemaAndMigrate` creates missing base table
 - `004_monetary_decimal_precision`:
   - **MySQL**: Inspects `INFORMATION_SCHEMA.COLUMNS` and executes `ALTER TABLE ... MODIFY COLUMN ... DECIMAL(15, 2)` on any legacy floating-point monetary columns in-place without dropping tables.
   - **SQLite**: Inspects `PRAGMA table_info` for legacy `DOUBLE`/`FLOAT`/`REAL` monetary columns; wraps table rebuilds in an ACID transaction with pre/post row-count and monetary sum parity verification before swapping tables.
+- `005_login_rate_limits`: Creates `login_rate_limits` and `idx_rate_throttle_until` across SQLite and MySQL for persistent login throttling.
 
 ### Pre-Upgrade Backup & Rollback Procedure
 Always back up before applying schema upgrades or major releases in production:
@@ -150,7 +153,8 @@ cp data/stock_trading_backup_<timestamp>.db data/stock_trading.db
 | `PORT` | `[Node.js]` | `3000` | Public HTTP listener port (or behind reverse proxy) |
 | `NODE_ENV` / `APP_ENV` | `[Both]` | `development` | Set to `production` to enforce strict DB/TLS/demo guards |
 | `JAVA_HOST` / `JAVA_PORT` | `[Node.js]` | `127.0.0.1` / `8765` | Keep Java bound to `127.0.0.1` behind gateway |
-| `APP_URL` / `ALLOWED_ORIGINS` | `[Both]` | `http://localhost:3000` | Production HTTPS origin allowlist |
+| `APP_URL` / `ALLOWED_ORIGINS` / `ALLOWED_HOSTS` | `[Both]` | `http://localhost:3000` | Production HTTPS origin & host allowlists |
+| `TRUST_PROXY` / `TRUSTED_PROXY_IPS` / `TRUSTED_PROXIES` | `[Both]` | `false` / *(empty)* | Explicit trusted reverse-proxy hop/IPs for `X-Forwarded-*` |
 | `SESSION_TIMEOUT_SECONDS` | `[Java]` | `1800` | Server-side sliding session expiry |
 | `COOKIE_SECURE` / `COOKIE_SAMESITE` | `[Java]` | `false` / `Lax` | Set `COOKIE_SECURE=true` behind HTTPS |
 | `DB_TYPE` | `[Both]` | `sqlite` | **Required** in prod (`mysql` or `sqlite`) |
@@ -187,18 +191,18 @@ The following accounts are seeded **only in local development** (`APP_ENV != pro
 
 ---
 
-## 8. Automated Testing & Verification Results (183/183 Passed)
+## 8. Automated Testing & Verification Results (216/216 Passed)
 
 All 5 automated Java test suites executed cleanly after compilation via `npm test` (`java -cp "lib/*:out" test.AllTestsRunner`, exit code `0`):
 
 | Test Suite | Passed / Total | Verified Coverage |
 |---|---:|---|
-| `TradingServiceTest` | **19 / 19** | `BigDecimal` 0.15% fees, `Idempotency-Key` deduplication, concurrent BUY/SELL safety, race conditions, DB rollback on triggers, DAO invalid-price/qty guards |
-| `PortfolioCalculationTest` | **7 / 7** | Weighted-average `BigDecimal` cost basis, partial/full sell cost updates, P&L rounding, non-positive/`NaN` price guards, floating-point drift avoidance |
-| `SecurityAndAuthTest` | **54 / 54** | BCrypt `$2a$` verification, `$LEGACY$` vs plaintext rejection, CSRF enforcement, `Origin`/`Referer` guards, RBAC, forged `X-User-Id` rejection, privilege escalation block, session expiry |
-| `DatabaseAndIntegrationTest` | **58 / 58** | JDBC health & CRUD, production `DB_TYPE`/`root`/weak-password/TLS validation, PEM/PKCS12 truststore URL generation, `EnvConfig` precedence, `BoundedConnectionPool` limits/timeouts/eviction/rollback-on-close/shutdown, idempotent schema migrations + `DOUBLE` -> `DECIMAL(15, 2)` upgrade preserving balances/holdings/transactions, MySQL `ALTER TABLE` DDL generation |
-| `EndToEndHttpIntegrationTest` | **45 / 45** | Live `TradingPlatformHttpServer` + `ServletBridge` HTTP round-trips: auth, CSRF, registration escalation block, ACID BUY/SELL trades, `409 Conflict` duplicate idempotency, persistence across server restarts, cross-tenant `403`, logout invalidation (`401`), session timeout |
-| **Total** | **183 / 183 (100%)** | **All assertions passed with non-zero exit enforcement in `AllTestsRunner`** |
+| `TradingServiceTest` | **22 / 22** | `BigDecimal` 0.15% fees, `Idempotency-Key` deduplication, concurrent BUY/SELL safety, post-commit notification isolation, uncertain rollback discarding, DAO invalid-price/qty guards |
+| `PortfolioCalculationTest` | **8 / 8** | Weighted-average `BigDecimal` cost basis, partial/full sell cost updates, P&L rounding, non-positive/`NaN` price guards, floating-point drift avoidance |
+| `SecurityAndAuthTest` | **70 / 70** | BCrypt `$2a$` verification, persistent DB progressive rate limiting (`LoginRateLimitDAO`), normalized/IP throttling, concurrency, `LoginServlet` anti-enumeration (`401`/`429`/`500`), spoofed `X-Forwarded-Host`/`Origin`/`Host` rejection (`403`), CSRF enforcement, RBAC, privilege escalation block, session expiry |
+| `DatabaseAndIntegrationTest` | **62 / 62** | JDBC health & CRUD, production `DB_TYPE`/`root`/weak-password/TLS validation, PEM/PKCS12 truststore URL generation, `EnvConfig` precedence, `BoundedConnectionPool` limits/timeouts/eviction/rollback-on-close/shutdown, idempotent schema migrations (`001`–`005`) preserving balances/holdings/transactions, MySQL `ALTER TABLE` DDL generation |
+| `EndToEndHttpIntegrationTest` | **54 / 54** | Live `TradingPlatformHttpServer` + `ServletBridge` HTTP round-trips: auth, anti-enumeration (`401`), progressive throttling (`429`), trusted-proxy vs untrusted `X-Forwarded-*` (`403`/cookie flags), CSRF, registration escalation block, ACID BUY/SELL trades, `409 Conflict` duplicate idempotency, persistence across server restarts, cross-tenant `403`, logout invalidation (`401`), session timeout |
+| **Total** | **216 / 216 (100%)** | **All assertions passed with non-zero exit enforcement in `AllTestsRunner`** |
 
 ---
 
@@ -221,7 +225,7 @@ npm run dev
 # Compile Java backend cleanly
 bash compile.sh
 
-# Run all 183 Java unit, security, database, pool, migration & HTTP E2E tests
+# Run all 216 Java unit, security, database, pool, migration & HTTP E2E tests
 npm test
 
 # Type-check frontend TypeScript

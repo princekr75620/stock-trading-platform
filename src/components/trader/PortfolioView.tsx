@@ -3,24 +3,31 @@ import { Portfolio, Stock } from '../../types';
 
 interface PortfolioViewProps {
   portfolio: Portfolio | null;
+  portfolioLoading?: boolean;
+  portfolioError?: string | null;
+  onRetryPortfolio?: () => void;
   stocks: Stock[];
   onOpenTrade: (stock: Stock, type: 'BUY' | 'SELL') => void;
 }
 
 export const PortfolioView: React.FC<PortfolioViewProps> = ({
   portfolio,
+  portfolioLoading = false,
+  portfolioError = null,
+  onRetryPortfolio,
   stocks,
   onOpenTrade,
 }) => {
-  const currentVal = portfolio?.currentPortfolioValue ?? 0;
-  const investmentVal = portfolio?.totalInvestmentValue ?? 0;
-  const pnl = portfolio?.unrealizedProfitLoss ?? 0;
-  const pnlPercent = portfolio?.unrealizedProfitLossPercent ?? 0;
-  const cashBalance = portfolio?.cashBalance ?? 0;
-  const totalNetWorth = currentVal + cashBalance;
+  const hasPortfolio = portfolio !== null;
+  const currentVal = hasPortfolio ? portfolio.currentPortfolioValue : null;
+  const investmentVal = hasPortfolio ? portfolio.totalInvestmentValue : null;
+  const pnl = hasPortfolio ? portfolio.unrealizedProfitLoss : null;
+  const pnlPercent = hasPortfolio ? portfolio.unrealizedProfitLossPercent : null;
+  const cashBalance = typeof portfolio?.cashBalance === 'number' ? portfolio.cashBalance : null;
+  const totalNetWorth = currentVal !== null && cashBalance !== null ? currentVal + cashBalance : null;
 
   const holdings = portfolio?.holdings ?? [];
-  const isProfit = pnl >= 0;
+  const isProfit = (pnl ?? 0) >= 0;
 
   return (
     <div className="space-y-6">
@@ -28,9 +35,26 @@ export const PortfolioView: React.FC<PortfolioViewProps> = ({
       <div className="pb-4 border-b border-gray-200">
         <h1 className="text-2xl font-bold text-gray-900">Portfolio</h1>
         <p className="text-sm text-gray-600">
-          Your current asset holdings, investment costs, and realized/unrealized profit & loss.
+          Your current asset holdings, investment costs, and realized/unrealized profit &amp; loss.
         </p>
       </div>
+
+      {!hasPortfolio && portfolioError && (
+        <div className="bg-red-50 border border-red-200 rounded-lg p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div>
+            <h3 className="font-bold text-red-900 text-sm">Unable to load portfolio balance and holdings</h3>
+            <p className="text-xs text-red-700 mt-0.5">{portfolioError}</p>
+          </div>
+          {onRetryPortfolio && (
+            <button
+              onClick={onRetryPortfolio}
+              className="px-3.5 py-1.5 bg-red-600 hover:bg-red-700 text-white text-xs font-bold rounded-lg transition shrink-0 cursor-pointer"
+            >
+              Retry Sync
+            </button>
+          )}
+        </div>
+      )}
 
       {/* Summary Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
@@ -40,7 +64,9 @@ export const PortfolioView: React.FC<PortfolioViewProps> = ({
             Total Investment
           </span>
           <div className="text-2xl font-bold text-gray-900 mt-1">
-            ₹{investmentVal.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            {investmentVal !== null
+              ? `₹${investmentVal.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+              : (portfolioLoading ? 'Loading...' : 'Unavailable')}
           </div>
           <div className="text-xs text-gray-500 mt-1">
             Total cost basis of current holdings
@@ -53,10 +79,14 @@ export const PortfolioView: React.FC<PortfolioViewProps> = ({
             Current Value
           </span>
           <div className="text-2xl font-bold text-gray-900 mt-1">
-            ₹{currentVal.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            {currentVal !== null
+              ? `₹${currentVal.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+              : (portfolioLoading ? 'Loading...' : 'Unavailable')}
           </div>
           <div className="text-xs text-gray-500 mt-1">
-            Cash: ₹{cashBalance.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} &bull; Total: ₹{totalNetWorth.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            {cashBalance !== null && totalNetWorth !== null
+              ? `Cash: ₹${cashBalance.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} • Total: ₹${totalNetWorth.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+              : (portfolioLoading ? 'Loading cash balance...' : 'Cash balance unavailable')}
           </div>
         </div>
 
@@ -65,12 +95,25 @@ export const PortfolioView: React.FC<PortfolioViewProps> = ({
           <span className="text-xs font-medium text-gray-500 uppercase tracking-wider">
             Profit/Loss
           </span>
-          <div className={`text-2xl font-bold mt-1 ${isProfit ? 'text-green-600' : 'text-red-600'}`}>
-            {isProfit ? '+' : ''}₹{pnl.toFixed(2)}
-          </div>
-          <div className={`text-xs mt-1 font-medium ${isProfit ? 'text-green-600' : 'text-red-600'}`}>
-            {isProfit ? '+' : ''}{pnlPercent.toFixed(2)}% overall return
-          </div>
+          {pnl !== null && pnlPercent !== null ? (
+            <>
+              <div className={`text-2xl font-bold mt-1 ${isProfit ? 'text-green-600' : 'text-red-600'}`}>
+                {isProfit ? '+' : ''}₹{pnl.toFixed(2)}
+              </div>
+              <div className={`text-xs mt-1 font-medium ${isProfit ? 'text-green-600' : 'text-red-600'}`}>
+                {isProfit ? '+' : ''}{pnlPercent.toFixed(2)}% overall return
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="text-2xl font-bold mt-1 text-gray-500">
+                {portfolioLoading ? 'Loading...' : 'Unavailable'}
+              </div>
+              <div className="text-xs mt-1 text-gray-400">
+                {portfolioLoading ? 'Calculating return...' : 'P&L unavailable'}
+              </div>
+            </>
+          )}
         </div>
       </div>
 
@@ -115,7 +158,7 @@ export const PortfolioView: React.FC<PortfolioViewProps> = ({
                     previousPrice: h.currentPrice ?? 0,
                     priceChange: 0,
                     priceChangePercent: 0,
-                    availableQuantity: 10000,
+                    availableQuantity: 0,
                   };
                   const itemProfit = (h.profitLoss ?? 0) >= 0;
                   const avgPrice = h.avgPurchasePrice ?? (h as any).averageBuyPrice ?? 0;
@@ -191,7 +234,8 @@ export const PortfolioView: React.FC<PortfolioViewProps> = ({
             {holdings.map((h, i) => {
               const colors = ['bg-blue-600', 'bg-emerald-500', 'bg-amber-500', 'bg-indigo-500', 'bg-cyan-500', 'bg-purple-500'];
               const holdingVal = h.currentValue ?? ((h.quantity ?? 0) * (h.currentPrice ?? 0));
-              const pct = currentVal > 0 ? (holdingVal / currentVal) * 100 : 0;
+              const totalEquityVal = currentVal ?? 0;
+              const pct = totalEquityVal > 0 ? (holdingVal / totalEquityVal) * 100 : 0;
               return (
                 <div
                   key={`${h.symbol}-${i}`}
@@ -206,7 +250,8 @@ export const PortfolioView: React.FC<PortfolioViewProps> = ({
             {holdings.map((h, i) => {
               const colors = ['bg-blue-600', 'bg-emerald-500', 'bg-amber-500', 'bg-indigo-500', 'bg-cyan-500', 'bg-purple-500'];
               const holdingVal = h.currentValue ?? ((h.quantity ?? 0) * (h.currentPrice ?? 0));
-              const pct = currentVal > 0 ? (holdingVal / currentVal) * 100 : 0;
+              const totalEquityVal = currentVal ?? 0;
+              const pct = totalEquityVal > 0 ? (holdingVal / totalEquityVal) * 100 : 0;
               return (
                 <div key={`${h.symbol}-${i}`} className="flex items-center space-x-1.5">
                   <span className={`w-2.5 h-2.5 rounded-full ${colors[i % colors.length]}`} />
